@@ -7,6 +7,7 @@ import os
 import zipfile
 import datetime
 import random
+import concurrent.futures
 from shapely.geometry import shape, Polygon, LineString, MultiLineString
 from shapely.ops import unary_union
 import folium
@@ -21,7 +22,7 @@ import matplotlib.patheffects as pe
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="M.U.T.U.M. - MS", page_icon="🐦", layout="wide")
 
-# --- GRUPO 1: RESTRIÇÕES LEGAIS ---
+# --- LISTAS DE BASES ---
 BASES_GERAIS = [
     {"nome": "Unidades de Conservação", "url": "https://www.pinms.ms.gov.br/arcgis/rest/services/IMASUL/UCs_MS_Mosaico/MapServer/0/query", "colunas_nome": ["Nome UC", "NOME_UC", "NM_UC"], "coluna_legis": ["leis", "LEIS"], "tipo": "poligono"},
     {"nome": "Terras Indígenas", "url": "https://www.pinms.ms.gov.br/arcgis/rest/services/IMASUL/CAMADAS_API_SISGEO_v1/FeatureServer/4/query", "colunas_nome": ["terrai_nom", "TERRAI_NOM"], "coluna_legis": ["fase_ti"], "tipo": "poligono"},
@@ -36,61 +37,19 @@ BASES_GERAIS = [
     {"nome": "Biomas MS", "url": "https://www.pinms.ms.gov.br/arcgis/rest/services/IMASUL/lim_biomas_atual/MapServer/0/query", "colunas_nome": ["nm_bioma", "Bioma"], "coluna_legis": ["info_legis"], "tipo": "ponto"}
 ]
 
-# --- GRUPO 3: HIDROGRAFIA ---
 BASES_HIDRO = [
-    {
-        "nome": "Hidrografia MS (Rios)", 
-        "url": "https://www.pinms.ms.gov.br/arcgis/rest/services/SEMADESC/SEMADESC_MAPAS/MapServer/12/query", 
-        "colunas_nome": ["NOME", "nome", "Nome"], 
-        "coluna_legis": ["REGIME", "regime"], 
-        "tipo": "linha" 
-    }
+    {"nome": "Hidrografia MS (Rios)", "url": "https://www.pinms.ms.gov.br/arcgis/rest/services/SEMADESC/SEMADESC_MAPAS/MapServer/12/query", "colunas_nome": ["NOME", "nome", "Nome"], "coluna_legis": ["REGIME", "regime"], "tipo": "linha"}
 ]
 
-# --- GRUPO 4: FISCALIZAÇÃO ---
 BASES_FISCALIZACAO = [
-    {
-        "nome": "Embargos IBAMA",
-        "tipo_fonte": "REST", 
-        "url": "https://pamgia.ibama.gov.br/server/rest/services/01_Publicacoes_Bases/adm_embargos_ibama_a/MapServer/0/query",
-        "colunas_nome": ["num_tad", "NUM_TAD"], 
-        "tipo": "poligono"
-    },
-    {
-        "nome": "Embargos ICMBio",
-        "tipo_fonte": "WFS",
-        "url": "https://geoservicos.inde.gov.br/geoserver/ICMBio/ows",
-        "layer_name": "ICMBio:embargos_icmbio",
-        "colunas_nome": ["numero_embargo", "numero_emb"], 
-        "tipo": "poligono"
-    },
-    {
-        "nome": "MapBiomas Alerta",
-        "tipo_fonte": "WFS",
-        "url": "https://production.alerta.mapbiomas.org/geoserver/wfs",
-        "layer_name": "mapbiomas-alertas:alert_report",
-        "colunas_nome": ["alert_code", "alerta_id"], 
-        "tipo": "poligono"
-    },
-    {
-        "nome": "Focos de Calor (INPE - Ano Atual)",
-        "tipo_fonte": "WFS",
-        "url": "https://queimadas.dgi.inpe.br/queimadas/geoserver/wfs",
-        "layer_name": "bdqueimadas:focos_br_ref",
-        "colunas_nome": ["data_pas", "satelite"],
-        "tipo": "ponto"
-    }
+    {"nome": "Embargos IBAMA", "tipo_fonte": "REST", "url": "https://pamgia.ibama.gov.br/server/rest/services/01_Publicacoes_Bases/adm_embargos_ibama_a/MapServer/0/query", "colunas_nome": ["num_tad", "NUM_TAD"], "tipo": "poligono"},
+    {"nome": "Embargos ICMBio", "tipo_fonte": "WFS", "url": "https://geoservicos.inde.gov.br/geoserver/ICMBio/ows", "layer_name": "ICMBio:embargos_icmbio", "colunas_nome": ["numero_embargo", "numero_emb"], "tipo": "poligono"},
+    {"nome": "MapBiomas Alerta", "tipo_fonte": "WFS", "url": "https://production.alerta.mapbiomas.org/geoserver/wfs", "layer_name": "mapbiomas-alertas:alert_report", "colunas_nome": ["alert_code", "alerta_id"], "tipo": "poligono"},
+    {"nome": "Focos de Calor (INPE - Ano Atual)", "tipo_fonte": "WFS", "url": "https://queimadas.dgi.inpe.br/queimadas/geoserver/wfs", "layer_name": "bdqueimadas:focos_br_ref", "colunas_nome": ["data_pas", "satelite"], "tipo": "ponto"}
 ]
 
-# --- GRUPO 5: LICENCIAMENTO ---
 BASES_LICENCAS = [
-    {
-        "nome": "Licenças Emitidas (Siriema/IMASUL)",
-        "url": "https://www.pinms.ms.gov.br/arcgis/rest/services/IMASUL/licencas_ambientais/FeatureServer/16/query",
-        "colunas_nome": ["num_processo", "processo", "n_processo", "emp_id"], 
-        "coluna_legis": ["atividade", "desc_ativ", "tipologia"],
-        "tipo": "poligono"
-    }
+    {"nome": "Licenças Emitidas (Siriema/IMASUL)", "url": "https://www.pinms.ms.gov.br/arcgis/rest/services/IMASUL/licencas_ambientais/FeatureServer/16/query", "colunas_nome": ["num_processo", "processo", "n_processo", "emp_id"], "coluna_legis": ["atividade", "desc_ativ", "tipologia"], "tipo": "poligono"}
 ]
 
 # --- URLS ---
@@ -113,8 +72,7 @@ def buscar_valor_inteligente(attrs, lista_tentativas):
                 except: return str(val)
             return str(val)
     for key, val in attrs_lower.items():
-        if ('nome' in key or 'nm_' in key) and val:
-            return str(val)
+        if ('nome' in key or 'nm_' in key) and val: return str(val)
     return "Não identificado"
 
 def parse_float_br(valor_str):
@@ -124,13 +82,9 @@ def parse_float_br(valor_str):
     except: return 0.0
 
 def consultar_api_imasul(url, geometry_json, geometry_type):
-    params = {
-        'f': 'json', 'geometry': geometry_json, 'geometryType': geometry_type,
-        'spatialRel': 'esriSpatialRelIntersects', 'outFields': '*',
-        'returnGeometry': 'true', 'outSR': '31981'
-    }
+    params = {'f': 'json', 'geometry': geometry_json, 'geometryType': geometry_type, 'spatialRel': 'esriSpatialRelIntersects', 'outFields': '*', 'returnGeometry': 'true', 'outSR': '31981'}
     try:
-        response = requests.post(url, data=params, timeout=20)
+        response = requests.post(url, data=params, timeout=25)
         return response.json()
     except: return None
 
@@ -143,7 +97,127 @@ def consultar_wfs_icmbio(url, layer_name, bbox_list):
         else: return None
     except: return None
 
-# --- PLOTAGEM ESTÁTICA ---
+# --- PROCESSAMENTO PARALELO (OTIMIZAÇÃO) ---
+def processar_uma_base(base, dados_imovel):
+    """Função worker que processa uma única base isoladamente."""
+    resultados_parcial = []
+    camadas_parcial = []
+    
+    geom_utm_imovel = dados_imovel['geom_utm']
+    area_imovel = dados_imovel['area_ha']
+    
+    resp = None
+    if base.get('tipo_fonte') == 'WFS':
+        resp = consultar_wfs_icmbio(base['url'], base['layer_name'], dados_imovel['bounds_4674'])
+    else:
+        if base['tipo'] == 'ponto': payload = dados_imovel['json_point']; gtype = 'esriGeometryPoint'
+        else: payload = dados_imovel['json_poly']; gtype = 'esriGeometryPolygon'
+        resp = consultar_api_imasul(base['url'], payload, gtype)
+    
+    if resp and 'features' in resp and len(resp['features']) > 0:
+        for feat in resp['features']:
+            attrs = feat.get('attributes') or feat.get('properties')
+            nome = buscar_valor_inteligente(attrs, base['colunas_nome'])
+            legis = "-"
+            detalhes_extras = {}
+            
+            # Extração de Metadados
+            if "Licenças" in base['nome']:
+                detalhes_extras['Processo'] = buscar_valor_inteligente(attrs, ["num_processo", "processo"])
+                detalhes_extras['Atividade'] = buscar_valor_inteligente(attrs, ["atividade", "desc_ativ", "tipologia"])
+                detalhes_extras['Situacao'] = buscar_valor_inteligente(attrs, ["situacao", "status"])
+                detalhes_extras['Vencimento'] = buscar_valor_inteligente(attrs, ["vencimento", "data_venc", "validade"])
+            elif "IBAMA" in base['nome']:
+                detalhes_extras['Autuado'] = buscar_valor_inteligente(attrs, ["nome_embargado", "nom_pessoa", "nome_e"])
+                detalhes_extras['CPF/CNPJ'] = buscar_valor_inteligente(attrs, ["cpf_cnpj", "CPF_CNPJ"])
+                detalhes_extras['Data'] = buscar_valor_inteligente(attrs, ["dat_embargo", "dat_emb", "DAT_TAD"])
+                detalhes_extras['Infração'] = buscar_valor_inteligente(attrs, ["des_infracao", "des_infra"])
+            elif "ICMBio" in base['nome']:
+                detalhes_extras['Autuado'] = buscar_valor_inteligente(attrs, ["autuado", "AUTUADO"])
+                detalhes_extras['Data'] = buscar_valor_inteligente(attrs, ["data_tad", "DATA"])
+            elif "MapBiomas" in base['nome']:
+                detalhes_extras['Data Detecção'] = buscar_valor_inteligente(attrs, ["detected_at", "data_deteccao"])
+                detalhes_extras['Bioma'] = buscar_valor_inteligente(attrs, ["biome", "bioma"])
+            elif "Focos de Calor" in base['nome']:
+                detalhes_extras['Satélite'] = buscar_valor_inteligente(attrs, ["satelite"])
+                detalhes_extras['Data Hora'] = buscar_valor_inteligente(attrs, ["data_pas", "data_hora"])
+            elif base.get('coluna_legis'):
+                legis = buscar_valor_inteligente(attrs, base['coluna_legis'])
+            
+            area_txt, pct_txt = "---", "---"
+            poly_base = None
+            
+            # Tratamento Geométrico
+            try:
+                if base['tipo'] == 'ponto':
+                    poly_base = shape(feat['geometry'])
+                    area_txt = "Ponto no Imóvel"; pct_txt = "Foco/Ponto"
+                elif base['tipo'] == 'linha':
+                    area_txt = "Trecho no Imóvel"; pct_txt = "Intersecção Linear"
+                else:
+                    if base.get('tipo_fonte') == 'WFS': poly_base = shape(feat['geometry'])
+                    elif 'geometry' in feat and 'rings' in feat['geometry']:
+                        partes = [Polygon(a) for a in feat['geometry']['rings']]
+                        poly_base = unary_union(partes)
+            except: poly_base = None
+
+            if poly_base:
+                try:
+                    if not poly_base.is_valid: poly_base = poly_base.buffer(0)
+                    interseccao = None
+                    
+                    if base.get('tipo_fonte') == 'WFS':
+                        aux_gdf = gpd.GeoDataFrame({'geometry': [poly_base]}, crs="EPSG:4674").to_crs(dados_imovel['crs_utm'])
+                        interseccao = geom_utm_imovel.intersection(aux_gdf.geometry.iloc[0])
+                    else:
+                        interseccao = geom_utm_imovel.intersection(poly_base)
+
+                    if not interseccao.is_empty:
+                        if base['tipo'] == 'poligono':
+                            area_calc = interseccao.area / 10000
+                            area_txt = f"{area_calc:,.4f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                            pct_txt = f"{(area_calc/area_imovel)*100:.2f}%"
+                        
+                        gdf_conf = gpd.GeoDataFrame({'geometry': [interseccao]}, crs=dados_imovel['crs_utm'])
+                        nome_camada = f"{base['nome']}: {nome}"
+                        geojson_str = gdf_conf.to_crs(epsg=4326).to_json()
+                        cor_atual = gerar_cor_aleatoria()
+                        
+                        camadas_parcial.append({
+                            "nome": nome_camada, "geojson": json.loads(geojson_str), 
+                            "tipo": base['tipo'], "cor": cor_atual
+                        })
+                        
+                        resultados_parcial.append({
+                            "Base": base['nome'], "Identificação": nome, "Detalhes": legis,
+                            "Área (ha)": area_txt, "Status": pct_txt,
+                            "Extra": detalhes_extras
+                        })
+                except: pass
+                
+    return resultados_parcial, camadas_parcial
+
+def executar_varredura_paralela(lista_bases, dados_imovel):
+    """Gerenciador de Threads para execução simultânea."""
+    todos_resultados = []
+    todas_camadas = []
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        # Mapeia cada base para uma thread
+        future_to_base = {executor.submit(processar_uma_base, base, dados_imovel): base for base in lista_bases}
+        
+        for future in concurrent.futures.as_completed(future_to_base):
+            try:
+                res, cam = future.result()
+                todos_resultados.extend(res)
+                todas_camadas.extend(cam)
+            except Exception as exc:
+                # Opcional: print(f"Erro na base: {exc}")
+                pass
+                
+    return todos_resultados, todas_camadas
+
+# --- PLOTAGEM ESTÁTICA (COM CORREÇÃO DE HEADER) ---
 def plotar_declividade_estatica(gdf_web):
     bounds = gdf_web.total_bounds
     margem = 0.005
@@ -160,16 +234,23 @@ def plotar_declividade_estatica(gdf_web):
             ax.set_aspect('equal'); ax.set_axis_off(); ax.set_title("Carta de Declividade do Imóvel", fontsize=16, color='white', pad=20)
             fig.patch.set_facecolor('#0E1117')
             return fig
-        else: return None
     except: return None
+    return None
 
 def plotar_cartas_exercito_estatica(gdf_web):
     bounds = gdf_web.total_bounds
     margem = 0.015 
     minx, miny, maxx, maxy = bounds[0]-margem, bounds[1]-margem, bounds[2]+margem, bounds[3]+margem
+    
+    # Header adicionado para simular navegador e evitar bloqueio
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
     params = {"SERVICE": "WMS", "VERSION": "1.1.1", "REQUEST": "GetMap", "LAYERS": "ctm100", "STYLES": "", "SRS": "EPSG:4326", "BBOX": f"{minx},{miny},{maxx},{maxy}", "WIDTH": "1200", "HEIGHT": "1200", "FORMAT": "image/png"}
     try:
-        resp = requests.get(URL_WMS_EXERCITO, params=params, timeout=25)
+        # Timeout aumentado para 45s pois o Exército é lento
+        resp = requests.get(URL_WMS_EXERCITO, params=params, headers=headers, timeout=45)
         if resp.status_code == 200:
             img = Image.open(BytesIO(resp.content))
             fig, ax = plt.subplots(figsize=(12, 12))
@@ -178,8 +259,8 @@ def plotar_cartas_exercito_estatica(gdf_web):
             ax.set_aspect('equal'); ax.set_axis_off(); ax.set_title("Carta Topográfica (BDGex/Exército)", fontsize=16, color='white', pad=20)
             fig.patch.set_facecolor('#0E1117')
             return fig
-        else: return None
-    except Exception as e: return None
+    except: return None
+    return None
 
 @st.cache_data(show_spinner=False)
 def carregar_geometria_imovel(file_bytes):
@@ -209,135 +290,21 @@ def carregar_geometria_imovel(file_bytes):
         return {"geom_utm": geom_utm, "json_poly": json_poly, "json_point": json_point, "area_ha": area_ha, "geojson_folium": geojson_folium, "gdf_web": gdf_folium, "bounds": bounds, "bounds_4674": bounds_4674, "centro": centro, "crs_utm": gdf.crs}, None
     except Exception as e: return None, str(e)
 
-def executar_varredura(lista_bases, dados_imovel):
-    resultados = []
-    camadas_mapa = []
-    geom_utm_imovel = dados_imovel['geom_utm']
-    area_imovel = dados_imovel['area_ha']
-    
-    cores_por_id = {}
-
-    for base in lista_bases:
-        resp = None
-        if base.get('tipo_fonte') == 'WFS':
-            resp = consultar_wfs_icmbio(base['url'], base['layer_name'], dados_imovel['bounds_4674'])
-        else:
-            if base['tipo'] == 'ponto': payload = dados_imovel['json_point']; gtype = 'esriGeometryPoint'
-            else: payload = dados_imovel['json_poly']; gtype = 'esriGeometryPolygon'
-            resp = consultar_api_imasul(base['url'], payload, gtype)
-        
-        if resp and 'features' in resp and len(resp['features']) > 0:
-            for feat in resp['features']:
-                attrs = feat.get('attributes') or feat.get('properties')
-                nome = buscar_valor_inteligente(attrs, base['colunas_nome'])
-                legis = "-"
-                detalhes_extras = {}
-                
-                # Campos inteligentes
-                if "Licenças" in base['nome']:
-                    detalhes_extras['Processo'] = buscar_valor_inteligente(attrs, ["num_processo", "processo"])
-                    detalhes_extras['Atividade'] = buscar_valor_inteligente(attrs, ["atividade", "desc_ativ", "tipologia"])
-                    detalhes_extras['Situacao'] = buscar_valor_inteligente(attrs, ["situacao", "status"])
-                    detalhes_extras['Vencimento'] = buscar_valor_inteligente(attrs, ["vencimento", "data_venc", "validade"])
-
-                elif "IBAMA" in base['nome']:
-                    detalhes_extras['Autuado'] = buscar_valor_inteligente(attrs, ["nome_embargado", "nom_pessoa", "nome_e"])
-                    detalhes_extras['CPF/CNPJ'] = buscar_valor_inteligente(attrs, ["cpf_cnpj", "CPF_CNPJ", "cpf_cnpj_embargado"])
-                    detalhes_extras['Data'] = buscar_valor_inteligente(attrs, ["dat_embargo", "dat_emb", "DAT_TAD"])
-                    detalhes_extras['Infração'] = buscar_valor_inteligente(attrs, ["des_infracao", "des_infra", "desc_infracao"])
-                elif "ICMBio" in base['nome']:
-                    detalhes_extras['Autuado'] = buscar_valor_inteligente(attrs, ["autuado", "AUTUADO"])
-                    detalhes_extras['CPF/CNPJ'] = buscar_valor_inteligente(attrs, ["cpf_cnpj", "CPF_CNPJ"])
-                    detalhes_extras['Data'] = buscar_valor_inteligente(attrs, ["data_tad", "DATA", "data"])
-                    detalhes_extras['Infração'] = buscar_valor_inteligente(attrs, ["desc_infra", "infração"])
-                elif "MapBiomas" in base['nome']:
-                    detalhes_extras['Data Detecção'] = buscar_valor_inteligente(attrs, ["detected_at", "data_deteccao"])
-                    detalhes_extras['Bioma'] = buscar_valor_inteligente(attrs, ["biome", "bioma"])
-                    detalhes_extras['Fonte'] = "Alerta Automático"
-                elif "Focos de Calor" in base['nome']:
-                    detalhes_extras['Satélite'] = buscar_valor_inteligente(attrs, ["satelite"])
-                    detalhes_extras['Data Hora'] = buscar_valor_inteligente(attrs, ["data_pas", "data_hora"])
-                elif base.get('coluna_legis'):
-                    legis = buscar_valor_inteligente(attrs, base['coluna_legis'])
-                
-                area_txt, pct_txt = "---", "---"
-                
-                if base['tipo'] == 'ponto':
-                    try:
-                        pt_base = shape(feat['geometry'])
-                        poly_base = pt_base
-                    except: poly_base = None
-                    area_txt = "Ponto no Imóvel"; pct_txt = "Foco de Calor"
-                elif base['tipo'] == 'linha':
-                    area_txt = "Trecho no Imóvel"; pct_txt = "APP Potencial"
-                else: 
-                    try:
-                        poly_base = None
-                        if base.get('tipo_fonte') == 'WFS': poly_base = shape(feat['geometry'])
-                        elif 'geometry' in feat and 'rings' in feat['geometry']:
-                            aneis = feat['geometry']['rings']
-                            partes = [Polygon(a) for a in aneis]
-                            poly_base = unary_union(partes)
-                    except: poly_base = None
-
-                if poly_base:
-                    try:
-                        if not poly_base.is_valid: poly_base = poly_base.buffer(0)
-                        
-                        interseccao = None
-                        if base.get('tipo_fonte') == 'WFS':
-                            aux_gdf = gpd.GeoDataFrame({'geometry': [poly_base]}, crs="EPSG:4674").to_crs(dados_imovel['crs_utm'])
-                            geom_base_utm = aux_gdf.geometry.iloc[0]
-                            interseccao = geom_utm_imovel.intersection(geom_base_utm)
-                        else:
-                            interseccao = geom_utm_imovel.intersection(poly_base)
-
-                        if not interseccao.is_empty:
-                            if base['tipo'] == 'poligono':
-                                area_calc = interseccao.area / 10000
-                                area_txt = f"{area_calc:,.4f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                                pct_txt = f"{(area_calc/area_imovel)*100:.2f}%"
-                            
-                            gdf_conf = gpd.GeoDataFrame({'geometry': [interseccao]}, crs=dados_imovel['crs_utm'])
-                            nome_camada = f"{base['nome']}: {nome}"
-                            geojson_str = gdf_conf.to_crs(epsg=4326).to_json()
-                            
-                            if nome not in cores_por_id: cores_por_id[nome] = gerar_cor_aleatoria()
-                            cor_atual = cores_por_id[nome]
-                            
-                            camadas_mapa.append({
-                                "nome": nome_camada, "geojson": json.loads(geojson_str), 
-                                "tipo": base['tipo'], "cor": cor_atual
-                            })
-                            
-                            resultados.append({
-                                "Base": base['nome'], "Identificação": nome, "Detalhes": legis,
-                                "Área (ha)": area_txt, "Status": pct_txt,
-                                "Extra": detalhes_extras
-                            })
-                    except: pass
-                    
-    return resultados, camadas_mapa
-
 # --- INTERFACE PRINCIPAL ---
 st.title("🐦 M.U.T.U.M. - Vigilante Ambiental")
 st.markdown("##### Ferramenta de Monitoramento Unificado de Terras e Uso em MS")
 
-# --- AVISO LEGAL DE VERSÃO BETA ---
 with st.expander("⚠️ AVISO LEGAL - VERSÃO BETA (Leia antes de usar)", expanded=True):
     st.warning("""
-    **ATENÇÃO: ESTA É UMA VERSÃO DE TESTE (BETA 3.4)**
-    
-    1. **Fonte de Dados:** Este aplicativo consome dados públicos via APIs (WMS/WFS/REST) do IMASUL, IBAMA, INPE e Exército. Instabilidades nesses servidores externos podem causar falhas na consulta.
-    2. **Caráter Auxiliar:** As informações aqui apresentadas servem para *triagem rápida* e **NÃO SUBSTITUEM** a consulta oficial aos sistemas do IMASUL (Siriema/Sisla) ou a emissão de certidões oficiais.
-    3. **Responsabilidade:** O uso das informações para tomada de decisão técnica é de inteira responsabilidade do analista. Sempre valide os dados na fonte oficial.
-    
+    **ATENÇÃO: ESTA É UMA VERSÃO DE TESTE (BETA 3.5)**
+    1. **Fonte de Dados:** Este aplicativo consome dados públicos via APIs (WMS/WFS/REST). Instabilidades externas podem ocorrer.
+    2. **Caráter Auxiliar:** As informações aqui apresentadas servem para *triagem rápida* e **NÃO SUBSTITUEM** a consulta oficial aos sistemas do IMASUL.
+    3. **Responsabilidade:** O uso das informações é de responsabilidade do analista.
     *Voe com segurança!* 🐦
     """)
 
 uploaded_file = st.file_uploader("📂 Arraste seu Shapefile (.ZIP) para o ninho", type="zip")
 
-# Resetando Estado ao trocar arquivo
 if 'arquivo_atual' not in st.session_state or st.session_state['arquivo_atual'] != uploaded_file:
     st.session_state['arquivo_atual'] = uploaded_file
     st.session_state['resultados_geral'] = []
@@ -355,7 +322,6 @@ if 'arquivo_atual' not in st.session_state or st.session_state['arquivo_atual'] 
     st.session_state['mapa_lic'] = []
     st.session_state['fase_lic_feita'] = False
     
-    # Limpando imagens estáticas
     st.session_state['fig_declividade'] = None
     st.session_state['fig_cartas'] = None
 
@@ -376,12 +342,12 @@ if uploaded_file:
             "🍒 5. Licenciamento"
         ])
 
-        # --- ABA 1 ---
         with tab1:
             st.markdown("### Monitoramento de Restrições Gerais")
-            if st.button("🦅 Levantar Voo (Iniciar Varredura)", type="primary", use_container_width=True):
-                with st.spinner("🐦 Sobrevoando UCs, Terras Indígenas e Áreas Restritas..."):
-                    res, mapa = executar_varredura(BASES_GERAIS, dados_geo)
+            if st.button("🦅 Levantar Voo (Iniciar Varredura Rápida)", type="primary", use_container_width=True):
+                with st.spinner("🐦 Sobrevoando todas as bases simultaneamente..."):
+                    # AGORA USANDO A FUNÇÃO PARALELA
+                    res, mapa = executar_varredura_paralela(BASES_GERAIS, dados_geo)
                     st.session_state['resultados_geral'] = res
                     st.session_state['mapa_geral'] = mapa
                     st.session_state['fase_geral_feita'] = True
@@ -398,41 +364,36 @@ if uploaded_file:
                 m1.fit_bounds([[dados_geo['bounds'][1], dados_geo['bounds'][0]], [dados_geo['bounds'][3], dados_geo['bounds'][2]]])
                 folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Satélite').add_to(m1)
                 folium.GeoJson(dados_geo['geojson_folium'], name="📍 Meu Imóvel", style_function=lambda x: {'fillColor': '#ffff00', 'color': '#ffff00', 'fillOpacity': 0.1, 'weight': 3}).add_to(m1)
-                
                 for c in st.session_state['mapa_geral']:
                     cor = c.get('cor', '#ff0000')
                     folium.GeoJson(c['geojson'], name=c['nome'], style_function=lambda x, color=cor: {'fillColor': color, 'color': color, 'fillOpacity': 0.6, 'weight': 1}, tooltip=c['nome']).add_to(m1)
                 folium.LayerControl().add_to(m1)
                 st_folium(m1, width="100%", height=500, returned_objects=[])
 
-        # --- ABA 2 ---
         with tab2:
             st.markdown("### Mapeamento de Declividade")
             st.caption("Imagem gerada diretamente dos servidores do IMASUL.")
             st.markdown("""<div style='background-color:#262730;padding:10px;border-radius:5px;color:#FAFAFA;display:flex;gap:15px;flex-wrap:wrap;justify-content:center;border:1px solid #41424C;'><div><span style='color:#00a884;'>■</span> 0-5°</div><div><span style='color:#4c0073;'>■</span> 5-16°</div><div><span style='color:#ffeb00;'>■</span> 16-25°</div><div><span style='color:#ff3700;'>■</span> 25-45° (AUR)</div><div><span style='color:#000000;border:1px solid #fff;'>■</span> >45° (APP)</div></div>""", unsafe_allow_html=True)
-            
             if st.button("⛰️ Mapear Relevo", use_container_width=True):
-                with st.spinner("🐦 O Mutum está calculando o esforço de voo (Baixando Declividade)..."):
+                with st.spinner("🐦 O Mutum está calculando o esforço de voo..."):
                     st.session_state['fig_declividade'] = plotar_declividade_estatica(dados_geo['gdf_web'])
-            
             if st.session_state['fig_declividade']:
                 st.pyplot(st.session_state['fig_declividade'], use_container_width=True)
 
-        # --- ABA 3 ---
         with tab3:
             st.markdown("### Cartografia & Hidrografia")
             if st.button("🗺️ Consultar Cartas do Exército", use_container_width=True):
-                with st.spinner("🐦 Buscando referências cartográficas no BDGex..."):
+                with st.spinner("🐦 Buscando referências cartográficas no BDGex (Isso pode demorar um pouco)..."):
                     st.session_state['fig_cartas'] = plotar_cartas_exercito_estatica(dados_geo['gdf_web'])
             if st.session_state['fig_cartas']:
                 st.pyplot(st.session_state['fig_cartas'], use_container_width=True)
 
-        # --- ABA 4 ---
         with tab4:
             st.markdown("### 🚨 Fiscalização, Calor e Alertas")
             if st.button("🔥 Rastrear Infrações e Calor", type="primary", use_container_width=True):
-                with st.spinner("🐦 O Mutum ativou a visão térmica (INPE) e o radar de infrações (IBAMA/ICMBio)..."):
-                    res, mapa = executar_varredura(BASES_FISCALIZACAO, dados_geo)
+                with st.spinner("🐦 O Mutum ativou a visão térmica (INPE) e o radar de infrações..."):
+                    # AGORA USANDO A FUNÇÃO PARALELA
+                    res, mapa = executar_varredura_paralela(BASES_FISCALIZACAO, dados_geo)
                     st.session_state['resultados_fisc'] = res
                     st.session_state['mapa_fisc'] = mapa
                     st.session_state['fase_fisc_feita'] = True
@@ -446,18 +407,15 @@ if uploaded_file:
                             if "Ponto" in item['Área (ha)'] or "Trecho" in item['Área (ha)']: area_float = 0
                             else: area_float = parse_float_br(item['Área (ha)'])
                         except: area_float = 0
-
                         if chave not in agrupados: agrupados[chave] = {'dados': item, 'area_total': area_float, 'fragmentos': 1}
                         else:
                             agrupados[chave]['area_total'] += area_float
                             agrupados[chave]['fragmentos'] += 1
                     
                     st.error(f"🔥 Alerta no Ninho! Foram encontrados **{len(agrupados)}** registros de infração, calor ou alerta.")
-                    
                     for chave, obj in agrupados.items():
                         item = obj['dados']
                         area_str = "Ponto/Trecho" if "Ponto" in item['Área (ha)'] else f"{obj['area_total']:,.4f} ha".replace(",", "X").replace(".", ",").replace("X", ".")
-                        
                         titulo = f"🚫 {chave} - {area_str}"
                         with st.expander(titulo):
                             d = item.get('Extra', {})
@@ -490,14 +448,14 @@ if uploaded_file:
                     st_folium(m4, width="100%", height=500, returned_objects=[])
                 else: st.success("✅ Tudo calmo! O Mutum não encontrou passivos ambientais ou fogo recente.")
 
-        # --- ABA 5 ---
         with tab5:
             st.markdown("### 🍒 Licenciamento & Confronto de Dados")
             st.caption("A Cereja do Bolo: Cruzamento entre o que foi autorizado (Licenças) e o que foi alertado (Fiscalização).")
             
             if st.button("🍒 Cruzar Dados (Licenças vs Alertas)", type="primary", use_container_width=True):
                 with st.spinner("🐦 O Mutum está comparando a papelada com a realidade..."):
-                    res_lic, mapa_lic = executar_varredura(BASES_LICENCAS, dados_geo)
+                    # AGORA USANDO A FUNÇÃO PARALELA TAMBÉM
+                    res_lic, mapa_lic = executar_varredura_paralela(BASES_LICENCAS, dados_geo)
                     st.session_state['resultados_lic'] = res_lic
                     st.session_state['mapa_lic'] = mapa_lic
                     st.session_state['fase_lic_feita'] = True
@@ -519,9 +477,7 @@ if uploaded_file:
                     st.info("ℹ️ Nenhuma licença digital encontrada no sistema para esta área.")
 
                 st.divider()
-
                 st.markdown("#### ⚔️ O Veredito do Mutum (Confronto)")
-                st.markdown("#### 🗺️ Visão Tática do Licenciamento")
                 
                 if not st.session_state.get('fase_fisc_feita'):
                     st.warning("⚠️ O Mutum precisa visitar a aba **'4. Fiscalização'** antes de dar o veredito.")
@@ -530,19 +486,14 @@ if uploaded_file:
                         st.success("✅ Sem alertas de fiscalização para confrontar. Aparentemente tudo regular!")
                     else:
                         alertas_sem_licenca = 0
-                        alertas_autorizados = 0
-                        
                         for alerta_geo in st.session_state['mapa_fisc']:
                             if alerta_geo['tipo'] == 'ponto': continue
-
                             try:
                                 geom_raw_alerta = alerta_geo['geojson']['features'][0]['geometry']
                                 shape_alerta = shape(geom_raw_alerta)
                                 area_alerta = shape_alerta.area
-                                
                                 area_interseccao_total = 0
                                 licencas_cobertura = []
-                                
                                 for lic_geo in st.session_state['mapa_lic']:
                                     geom_raw_lic = lic_geo['geojson']['features'][0]['geometry']
                                     shape_lic = shape(geom_raw_lic)
@@ -550,36 +501,29 @@ if uploaded_file:
                                     if not intersec.is_empty:
                                         area_interseccao_total += intersec.area
                                         licencas_cobertura.append(lic_geo['nome'])
-                                
                                 pct_coberto = (area_interseccao_total / area_alerta) * 100 if area_alerta > 0 else 0
                                 nome_alerta = alerta_geo['nome']
-                                
                                 if pct_coberto > 90:
-                                    st.success(f"✅ **Supressão Autorizada:** O alerta '{nome_alerta}' está {pct_coberto:.1f}% coberto pelas licenças: {', '.join(licencas_cobertura)}.")
-                                    alertas_autorizados += 1
+                                    st.success(f"✅ **Supressão Autorizada:** O alerta '{nome_alerta}' está {pct_coberto:.1f}% coberto pelas licenças.")
                                 elif pct_coberto > 5:
-                                    st.warning(f"⚠️ **Atenção Parcial:** O alerta '{nome_alerta}' tem apenas {pct_coberto:.1f}% de cobertura. Verifique extrapolação.")
+                                    st.warning(f"⚠️ **Atenção Parcial:** O alerta '{nome_alerta}' tem apenas {pct_coberto:.1f}% de cobertura.")
                                 else:
-                                    st.error(f"🚨 **Passivo Identificado:** O alerta '{nome_alerta}' NÃO possui cobertura de licença (0% de sobreposição).")
+                                    st.error(f"🚨 **Passivo Identificado:** O alerta '{nome_alerta}' NÃO possui cobertura de licença.")
                                     alertas_sem_licenca += 1
-                            except Exception as e:
-                                st.error(f"Erro ao processar geometria: {e}")
+                            except: pass
                         
                         if alertas_sem_licenca > 0:
                             st.markdown(f"**Resumo:** O Mutum detectou **{alertas_sem_licenca}** polígonos suspeitos sem licença digital correspondente.")
                     
-                    # --- MAPA AGORA FICA AQUI FORA DO ELSE (MOSTRA SEMPRE) ---
                     m5 = folium.Map(location=dados_geo['centro'])
                     m5.fit_bounds([[dados_geo['bounds'][1], dados_geo['bounds'][0]], [dados_geo['bounds'][3], dados_geo['bounds'][2]]])
                     folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Satélite').add_to(m5)
                     folium.GeoJson(dados_geo['geojson_folium'], style_function=lambda x: {'fillColor': 'none', 'color': 'yellow', 'weight': 2}).add_to(m5)
                     
-                    # Desenha Licenças (Se existirem)
                     if st.session_state['mapa_lic']:
                         for c in st.session_state['mapa_lic']:
                             folium.GeoJson(c['geojson'], name=f"Licença: {c['nome']}", style_function=lambda x: {'fillColor': '#00FF00', 'color': '#006400', 'fillOpacity': 0.4, 'weight': 1}, tooltip=c['nome']).add_to(m5)
                     
-                    # Desenha Alertas (Se existirem)
                     if st.session_state['mapa_fisc']:
                         for c in st.session_state['mapa_fisc']:
                             if c['tipo'] != 'ponto':
