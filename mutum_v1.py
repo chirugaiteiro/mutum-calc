@@ -12,7 +12,6 @@ from shapely.geometry import shape, Polygon, LineString, MultiLineString
 from shapely.ops import unary_union
 import folium
 from streamlit_folium import st_folium
-# Suprime avisos de segurança sobre SSL não verificado (necessário para BDGex)
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -52,12 +51,13 @@ BASES_FISCALIZACAO = [
 ]
 
 BASES_LICENCAS = [
+    # Adicionado 'tipo_empre' para classificação
     {"nome": "Licenças Emitidas (Siriema/IMASUL)", "url": "https://www.pinms.ms.gov.br/arcgis/rest/services/IMASUL/licencas_ambientais/FeatureServer/16/query", "colunas_nome": ["num_processo", "processo", "n_processo", "emp_id"], "coluna_legis": ["atividade", "desc_ativ", "tipologia"], "tipo": "poligono"}
 ]
 
 # --- URLS ---
 URL_DECLIVIDADE_EXPORT = "https://www.pinms.ms.gov.br/arcgis/rest/services/Imagens/fusao_declividade_graus/ImageServer/exportImage"
-URL_WMS_EXERCITO = "https://bdgex.eb.mil.br/mapcache"
+URL_HIDRO_EXPORT = "https://www.pinms.ms.gov.br/arcgis/rest/services/SEMADESC/SEMADESC_MAPAS/MapServer/export"
 
 # --- FUNÇÕES AUXILIARES ---
 def gerar_cor_aleatoria():
@@ -127,6 +127,8 @@ def processar_uma_base(base, dados_imovel):
             if "Licenças" in base['nome']:
                 detalhes_extras['Processo'] = buscar_valor_inteligente(attrs, ["num_processo", "processo"])
                 detalhes_extras['Atividade'] = buscar_valor_inteligente(attrs, ["atividade", "desc_ativ", "tipologia"])
+                # Captura do Tipo de Empreendimento/Licença
+                detalhes_extras['Tipo Licença'] = buscar_valor_inteligente(attrs, ["tipo_empre", "tipo_licenca", "desc_tiple"])
                 detalhes_extras['Situacao'] = buscar_valor_inteligente(attrs, ["situacao", "status"])
                 detalhes_extras['Vencimento'] = buscar_valor_inteligente(attrs, ["vencimento", "data_venc", "validade"])
             elif "Hidrografia" in base['nome']:
@@ -151,17 +153,14 @@ def processar_uma_base(base, dados_imovel):
             area_txt, pct_txt = "---", "---"
             poly_base = None
             
-            # Tratamento Geométrico
             try:
                 if base['tipo'] == 'ponto':
                     poly_base = shape(feat['geometry'])
                     area_txt = "Ponto no Imóvel"; pct_txt = "Foco/Ponto"
                 elif base['tipo'] == 'linha':
-                    poly_base = None # Linhas complexas tratamos apenas intersecção
+                    poly_base = None 
                     if 'geometry' in feat and 'paths' in feat['geometry']:
-                         # Simplificação para linhas do ArcGIS (não desenha, só detecta)
                          area_txt = "Sim"; pct_txt = "Cruzamento"
-                         # Se quiser desenhar linha, precisaria converter paths em LineString
                 else:
                     if base.get('tipo_fonte') == 'WFS': poly_base = shape(feat['geometry'])
                     elif 'geometry' in feat and 'rings' in feat['geometry']:
@@ -169,7 +168,6 @@ def processar_uma_base(base, dados_imovel):
                         poly_base = unary_union(partes)
             except: poly_base = None
 
-            # Tratamento especial para linha (Hidro) sem geometria complexa
             if base['tipo'] == 'linha' and area_txt == "Sim":
                  resultados_parcial.append({
                     "Base": base['nome'], "Identificação": nome, "Detalhes": legis,
@@ -177,7 +175,6 @@ def processar_uma_base(base, dados_imovel):
                     "Extra": detalhes_extras
                 })
             
-            # Tratamento para Poligonos e Pontos
             elif poly_base:
                 try:
                     if not poly_base.is_valid: poly_base = poly_base.buffer(0)
@@ -190,8 +187,16 @@ def processar_uma_base(base, dados_imovel):
                         interseccao = geom_utm_imovel.intersection(poly_base)
 
                     if not interseccao.is_empty:
+                        area_calc = 0
                         if base['tipo'] == 'poligono':
                             area_calc = interseccao.area / 10000
+                            
+                            # --- FILTRO ANTI-VIZINHO ---
+                            # Se a sobreposição for menor que 0.5 hectares, ignoramos
+                            if area_calc < 0.5:
+                                continue 
+                            # ---------------------------
+
                             area_txt = f"{area_calc:,.4f}".replace(",", "X").replace(".", ",").replace("X", ".")
                             pct_txt = f"{(area_calc/area_imovel)*100:.2f}%"
                         
@@ -215,10 +220,8 @@ def processar_uma_base(base, dados_imovel):
     return resultados_parcial, camadas_parcial
 
 def executar_varredura_paralela(lista_bases, dados_imovel):
-    """Gerenciador de Threads para execução simultânea."""
     todos_resultados = []
     todas_camadas = []
-    
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         future_to_base = {executor.submit(processar_uma_base, base, dados_imovel): base for base in lista_bases}
         for future in concurrent.futures.as_completed(future_to_base):
@@ -249,25 +252,37 @@ def plotar_declividade_estatica(gdf_web):
     except: return None
     return None
 
-def plotar_cartas_exercito_estatica(gdf_web):
+def plotar_hidrografia_imasul_estatica(gdf_web):
+    """Gera mapa estático usando o MapServer da SEMADESC (Camada 12 - Rios)"""
     bounds = gdf_web.total_bounds
-    margem = 0.015 
+    margem = 0.02 # Margem maior para contexto
     minx, miny, maxx, maxy = bounds[0]-margem, bounds[1]-margem, bounds[2]+margem, bounds[3]+margem
     
-    # Header e Verify False para contornar problemas de segurança do servidor do Exército
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    params = {"SERVICE": "WMS", "VERSION": "1.1.1", "REQUEST": "GetMap", "LAYERS": "ctm100", "STYLES": "", "SRS": "EPSG:4326", "BBOX": f"{minx},{miny},{maxx},{maxy}", "WIDTH": "1200", "HEIGHT": "1200", "FORMAT": "image/png"}
+    # layers=show:12 (Hidrografia)
+    params = {
+        "bbox": f"{minx},{miny},{maxx},{maxy}",
+        "bboxSR": "4326",
+        "layers": "show:12",
+        "size": "1200,1200",
+        "imageSR": "4326",
+        "format": "png",
+        "f": "image",
+        "transparent": "false" # Fundo branco para contraste
+    }
     
     try:
-        # verify=False é crucial para o servidor do BDGex em cloud
-        resp = requests.get(URL_WMS_EXERCITO, params=params, headers=headers, timeout=45, verify=False)
+        resp = requests.get(URL_HIDRO_EXPORT, params=params, timeout=30)
         if resp.status_code == 200:
             img = Image.open(BytesIO(resp.content))
             fig, ax = plt.subplots(figsize=(12, 12))
             ax.imshow(img, extent=[minx, maxx, miny, maxy], aspect='auto')
-            gdf_web.plot(ax=ax, facecolor='none', edgecolor='blue', linewidth=3, path_effects=[pe.Stroke(linewidth=5, foreground='white'), pe.Normal()])
-            ax.set_aspect('equal'); ax.set_axis_off(); ax.set_title("Carta Topográfica (BDGex/Exército)", fontsize=16, color='white', pad=20)
-            fig.patch.set_facecolor('#0E1117')
+            
+            # Desenha o imóvel
+            gdf_web.plot(ax=ax, facecolor='none', edgecolor='red', linewidth=2, path_effects=[pe.Stroke(linewidth=4, foreground='white'), pe.Normal()])
+            
+            ax.set_aspect('equal'); ax.set_axis_off()
+            ax.set_title("Hidrografia Oficial (SEMADESC)", fontsize=16, color='black', pad=20)
+            fig.patch.set_facecolor('white') # Fundo da figura branco
             return fig
     except: return None
     return None
@@ -306,7 +321,7 @@ st.markdown("##### Ferramenta de Monitoramento Unificado de Terras e Uso em MS")
 
 with st.expander("⚠️ AVISO LEGAL - VERSÃO BETA (Leia antes de usar)", expanded=True):
     st.warning("""
-    **ATENÇÃO: ESTA É UMA VERSÃO DE TESTE (BETA 0.6)**
+    **ATENÇÃO: ESTA É UMA VERSÃO DE TESTE (BETA 3.7)**
     1. **Fonte de Dados:** Este aplicativo consome dados públicos via APIs (WMS/WFS/REST). Instabilidades externas podem ocorrer.
     2. **Caráter Auxiliar:** As informações aqui apresentadas servem para *triagem rápida* e **NÃO SUBSTITUEM** a consulta oficial.
     3. **Responsabilidade:** O uso das informações é de responsabilidade do analista.
@@ -347,7 +362,7 @@ if uploaded_file:
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "🔍 1. Restrições", 
             "⛰️ 2. Declividade", 
-            "💧 3. Cartas/Hidro", 
+            "💧 3. Hidrografia", 
             "🔥 4. Fiscalização/Calor", 
             "🍒 5. Licenciamento"
         ])
@@ -388,37 +403,30 @@ if uploaded_file:
                 st.pyplot(st.session_state['fig_declividade'], use_container_width=True)
 
         with tab3:
-            st.markdown("### Cartografia & Hidrografia")
-            
+            st.markdown("### Hidrografia (SEMADESC/IMASUL)")
             c_hidro1, c_hidro2 = st.columns(2)
-            
             with c_hidro1:
                 st.info("🌊 **Análise de Cursos Hídricos**")
-                if st.button("🔍 Verificar Rios e Córregos (Vetorial)", use_container_width=True):
+                if st.button("🔍 Verificar Rios (Vetorial)", use_container_width=True):
                     with st.spinner("Analisando base de hidrografia..."):
                         res_h, _ = executar_varredura_paralela(BASES_HIDRO, dados_geo)
                         st.session_state['resultados_hidro'] = res_h
                         st.session_state['fase_hidro_feita'] = True
-                
                 if st.session_state['fase_hidro_feita']:
                     if st.session_state['resultados_hidro']:
                         st.warning(f"⚠️ {len(st.session_state['resultados_hidro'])} trechos de rios detectados.")
                         for r in st.session_state['resultados_hidro']:
                             st.write(f"**Rio:** {r['Identificação']}")
                             st.caption(f"Regime: {r['Extra'].get('Regime', 'N/D')}")
-                    else:
-                        st.success("✅ Nenhum rio da base oficial cruza o imóvel.")
+                    else: st.success("✅ Nenhum rio da base oficial cruza o imóvel.")
 
             with c_hidro2:
-                st.info("🗺️ **Carta do Exército**")
-                if st.button("🖼️ Carregar Mapa (BDGex)", use_container_width=True):
-                    with st.spinner("🐦 Conectando ao servidor do Exército (pode demorar)..."):
-                        st.session_state['fig_cartas'] = plotar_cartas_exercito_estatica(dados_geo['gdf_web'])
-                
+                st.info("🗺️ **Mapa de Hidrografia (Raster)**")
+                if st.button("🖼️ Carregar Mapa SEMADESC", use_container_width=True):
+                    with st.spinner("🐦 Gerando mapa estático dos rios..."):
+                        st.session_state['fig_cartas'] = plotar_hidrografia_imasul_estatica(dados_geo['gdf_web'])
                 if st.session_state.get('fig_cartas'):
                     st.pyplot(st.session_state['fig_cartas'], use_container_width=True)
-                elif st.session_state.get('fig_cartas') is None and st.session_state.get('fase_cartas_tentou'):
-                     st.error("❌ Não foi possível carregar a imagem do BDGex (Erro de conexão ou timeout).")
 
         with tab4:
             st.markdown("### 🚨 Fiscalização, Calor e Alertas")
@@ -496,8 +504,8 @@ if uploaded_file:
                         d = lic.get('Extra', {})
                         lista_display.append({
                             "Documento": lic['Identificação'],
+                            "Tipo": d.get('Tipo Licença', '-'),
                             "Atividade": d.get('Atividade', '-'),
-                            "Processo": d.get('Processo', '-'),
                             "Área (ha)": lic['Área (ha)']
                         })
                     st.dataframe(lista_display, use_container_width=True)
