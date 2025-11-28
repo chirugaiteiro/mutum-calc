@@ -51,7 +51,6 @@ BASES_FISCALIZACAO = [
 ]
 
 BASES_LICENCAS = [
-    # Adicionado 'tipo_empre' para classificação
     {"nome": "Licenças Emitidas (Siriema/IMASUL)", "url": "https://www.pinms.ms.gov.br/arcgis/rest/services/IMASUL/licencas_ambientais/FeatureServer/16/query", "colunas_nome": ["num_processo", "processo", "n_processo", "emp_id"], "coluna_legis": ["atividade", "desc_ativ", "tipologia"], "tipo": "poligono"}
 ]
 
@@ -76,7 +75,7 @@ def buscar_valor_inteligente(attrs, lista_tentativas):
             return str(val)
     for key, val in attrs_lower.items():
         if ('nome' in key or 'nm_' in key) and val: return str(val)
-    return "Não identificado"
+    return ""  # Retorna vazio se não achar, para facilitar o agrupamento depois
 
 def parse_float_br(valor_str):
     try:
@@ -120,6 +119,11 @@ def processar_uma_base(base, dados_imovel):
         for feat in resp['features']:
             attrs = feat.get('attributes') or feat.get('properties')
             nome = buscar_valor_inteligente(attrs, base['colunas_nome'])
+            
+            # Se nome vier vazio, tenta padronizar
+            if not nome or nome == "N/D":
+                nome = "Não identificado"
+
             legis = "-"
             detalhes_extras = {}
             
@@ -127,7 +131,6 @@ def processar_uma_base(base, dados_imovel):
             if "Licenças" in base['nome']:
                 detalhes_extras['Processo'] = buscar_valor_inteligente(attrs, ["num_processo", "processo"])
                 detalhes_extras['Atividade'] = buscar_valor_inteligente(attrs, ["atividade", "desc_ativ", "tipologia"])
-                # Captura do Tipo de Empreendimento/Licença
                 detalhes_extras['Tipo Licença'] = buscar_valor_inteligente(attrs, ["tipo_empre", "tipo_licenca", "desc_tiple"])
                 detalhes_extras['Situacao'] = buscar_valor_inteligente(attrs, ["situacao", "status"])
                 detalhes_extras['Vencimento'] = buscar_valor_inteligente(attrs, ["vencimento", "data_venc", "validade"])
@@ -190,12 +193,8 @@ def processar_uma_base(base, dados_imovel):
                         area_calc = 0
                         if base['tipo'] == 'poligono':
                             area_calc = interseccao.area / 10000
-                            
-                            # --- FILTRO ANTI-VIZINHO ---
-                            # Se a sobreposição for menor que 0.5 hectares, ignoramos
-                            if area_calc < 0.5:
-                                continue 
-                            # ---------------------------
+                            # FILTRO ANTI-VIZINHO
+                            if area_calc < 0.5: continue 
 
                             area_txt = f"{area_calc:,.4f}".replace(",", "X").replace(".", ",").replace("X", ".")
                             pct_txt = f"{(area_calc/area_imovel)*100:.2f}%"
@@ -253,12 +252,11 @@ def plotar_declividade_estatica(gdf_web):
     return None
 
 def plotar_hidrografia_imasul_estatica(gdf_web):
-    """Gera mapa estático usando o MapServer da SEMADESC (Camada 12 - Rios)"""
     bounds = gdf_web.total_bounds
-    margem = 0.02 # Margem maior para contexto
+    margem = 0.02
     minx, miny, maxx, maxy = bounds[0]-margem, bounds[1]-margem, bounds[2]+margem, bounds[3]+margem
     
-    # layers=show:12 (Hidrografia)
+    # layer 12 = Hidrografia
     params = {
         "bbox": f"{minx},{miny},{maxx},{maxy}",
         "bboxSR": "4326",
@@ -267,7 +265,7 @@ def plotar_hidrografia_imasul_estatica(gdf_web):
         "imageSR": "4326",
         "format": "png",
         "f": "image",
-        "transparent": "false" # Fundo branco para contraste
+        "transparent": "false" 
     }
     
     try:
@@ -276,13 +274,10 @@ def plotar_hidrografia_imasul_estatica(gdf_web):
             img = Image.open(BytesIO(resp.content))
             fig, ax = plt.subplots(figsize=(12, 12))
             ax.imshow(img, extent=[minx, maxx, miny, maxy], aspect='auto')
-            
-            # Desenha o imóvel
             gdf_web.plot(ax=ax, facecolor='none', edgecolor='red', linewidth=2, path_effects=[pe.Stroke(linewidth=4, foreground='white'), pe.Normal()])
-            
             ax.set_aspect('equal'); ax.set_axis_off()
             ax.set_title("Hidrografia Oficial (SEMADESC)", fontsize=16, color='black', pad=20)
-            fig.patch.set_facecolor('white') # Fundo da figura branco
+            fig.patch.set_facecolor('white')
             return fig
     except: return None
     return None
@@ -319,9 +314,9 @@ def carregar_geometria_imovel(file_bytes):
 st.title("🐦 M.U.T.U.M. - Vigilante Ambiental")
 st.markdown("##### Ferramenta de Monitoramento Unificado de Terras e Uso em MS")
 
-with st.expander("⚠️ AVISO LEGAL - VERSÃO BETA (Leia antes de usar)", expanded=True):
+with st.expander("⚠️ AVISO LEGAL - VERSÃO BETA 0.6 (Leia antes de usar)", expanded=True):
     st.warning("""
-    **ATENÇÃO: ESTA É UMA VERSÃO DE TESTE (BETA 3.7)**
+    **ATENÇÃO: ESTA É UMA VERSÃO DE TESTE (BETA 0.6)**
     1. **Fonte de Dados:** Este aplicativo consome dados públicos via APIs (WMS/WFS/REST). Instabilidades externas podem ocorrer.
     2. **Caráter Auxiliar:** As informações aqui apresentadas servem para *triagem rápida* e **NÃO SUBSTITUEM** a consulta oficial.
     3. **Responsabilidade:** O uso das informações é de responsabilidade do analista.
@@ -412,13 +407,31 @@ if uploaded_file:
                         res_h, _ = executar_varredura_paralela(BASES_HIDRO, dados_geo)
                         st.session_state['resultados_hidro'] = res_h
                         st.session_state['fase_hidro_feita'] = True
+                
                 if st.session_state['fase_hidro_feita']:
                     if st.session_state['resultados_hidro']:
-                        st.warning(f"⚠️ {len(st.session_state['resultados_hidro'])} trechos de rios detectados.")
+                        # --- LÓGICA DE AGRUPAMENTO DE RIOS ---
+                        rios_dict = {}
                         for r in st.session_state['resultados_hidro']:
-                            st.write(f"**Rio:** {r['Identificação']}")
-                            st.caption(f"Regime: {r['Extra'].get('Regime', 'N/D')}")
-                    else: st.success("✅ Nenhum rio da base oficial cruza o imóvel.")
+                            nome_rio = r['Identificação']
+                            if not nome_rio or nome_rio.strip() == "":
+                                nome_rio = "Não identificado"
+                            
+                            regime = r['Extra'].get('Regime', 'N/D')
+                            
+                            chave = f"{nome_rio} ({regime})"
+                            if chave not in rios_dict:
+                                rios_dict[chave] = 1
+                            else:
+                                rios_dict[chave] += 1
+                        
+                        st.warning(f"⚠️ Foram detectados **{len(rios_dict)}** corpos d'água distintos cruzando o imóvel.")
+                        
+                        # Exibe lista consolidada
+                        for desc, count in rios_dict.items():
+                            st.markdown(f"- **{desc}**: {count} segmento(s) mapeado(s).")
+                    else: 
+                        st.success("✅ Nenhum rio da base oficial cruza o imóvel.")
 
             with c_hidro2:
                 st.info("🗺️ **Mapa de Hidrografia (Raster)**")
