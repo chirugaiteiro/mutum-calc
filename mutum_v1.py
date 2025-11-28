@@ -12,6 +12,9 @@ from shapely.geometry import shape, Polygon, LineString, MultiLineString
 from shapely.ops import unary_union
 import folium
 from streamlit_folium import st_folium
+# Suprime avisos de segurança sobre SSL não verificado (necessário para BDGex)
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- IMPORTAÇÕES PARA O PLOT ESTÁTICO ---
 import matplotlib.pyplot as plt
@@ -97,9 +100,8 @@ def consultar_wfs_icmbio(url, layer_name, bbox_list):
         else: return None
     except: return None
 
-# --- PROCESSAMENTO PARALELO (OTIMIZAÇÃO) ---
+# --- PROCESSAMENTO PARALELO ---
 def processar_uma_base(base, dados_imovel):
-    """Função worker que processa uma única base isoladamente."""
     resultados_parcial = []
     camadas_parcial = []
     
@@ -127,6 +129,8 @@ def processar_uma_base(base, dados_imovel):
                 detalhes_extras['Atividade'] = buscar_valor_inteligente(attrs, ["atividade", "desc_ativ", "tipologia"])
                 detalhes_extras['Situacao'] = buscar_valor_inteligente(attrs, ["situacao", "status"])
                 detalhes_extras['Vencimento'] = buscar_valor_inteligente(attrs, ["vencimento", "data_venc", "validade"])
+            elif "Hidrografia" in base['nome']:
+                detalhes_extras['Regime'] = buscar_valor_inteligente(attrs, ["REGIME", "regime"])
             elif "IBAMA" in base['nome']:
                 detalhes_extras['Autuado'] = buscar_valor_inteligente(attrs, ["nome_embargado", "nom_pessoa", "nome_e"])
                 detalhes_extras['CPF/CNPJ'] = buscar_valor_inteligente(attrs, ["cpf_cnpj", "CPF_CNPJ"])
@@ -153,7 +157,11 @@ def processar_uma_base(base, dados_imovel):
                     poly_base = shape(feat['geometry'])
                     area_txt = "Ponto no Imóvel"; pct_txt = "Foco/Ponto"
                 elif base['tipo'] == 'linha':
-                    area_txt = "Trecho no Imóvel"; pct_txt = "Intersecção Linear"
+                    poly_base = None # Linhas complexas tratamos apenas intersecção
+                    if 'geometry' in feat and 'paths' in feat['geometry']:
+                         # Simplificação para linhas do ArcGIS (não desenha, só detecta)
+                         area_txt = "Sim"; pct_txt = "Cruzamento"
+                         # Se quiser desenhar linha, precisaria converter paths em LineString
                 else:
                     if base.get('tipo_fonte') == 'WFS': poly_base = shape(feat['geometry'])
                     elif 'geometry' in feat and 'rings' in feat['geometry']:
@@ -161,7 +169,16 @@ def processar_uma_base(base, dados_imovel):
                         poly_base = unary_union(partes)
             except: poly_base = None
 
-            if poly_base:
+            # Tratamento especial para linha (Hidro) sem geometria complexa
+            if base['tipo'] == 'linha' and area_txt == "Sim":
+                 resultados_parcial.append({
+                    "Base": base['nome'], "Identificação": nome, "Detalhes": legis,
+                    "Área (ha)": "Trecho Detectado", "Status": "Verificar APP",
+                    "Extra": detalhes_extras
+                })
+            
+            # Tratamento para Poligonos e Pontos
+            elif poly_base:
                 try:
                     if not poly_base.is_valid: poly_base = poly_base.buffer(0)
                     interseccao = None
@@ -203,21 +220,16 @@ def executar_varredura_paralela(lista_bases, dados_imovel):
     todas_camadas = []
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        # Mapeia cada base para uma thread
         future_to_base = {executor.submit(processar_uma_base, base, dados_imovel): base for base in lista_bases}
-        
         for future in concurrent.futures.as_completed(future_to_base):
             try:
                 res, cam = future.result()
                 todos_resultados.extend(res)
                 todas_camadas.extend(cam)
-            except Exception as exc:
-                # Opcional: print(f"Erro na base: {exc}")
-                pass
-                
+            except: pass
     return todos_resultados, todas_camadas
 
-# --- PLOTAGEM ESTÁTICA (COM CORREÇÃO DE HEADER) ---
+# --- PLOTAGEM ESTÁTICA ---
 def plotar_declividade_estatica(gdf_web):
     bounds = gdf_web.total_bounds
     margem = 0.005
@@ -242,15 +254,13 @@ def plotar_cartas_exercito_estatica(gdf_web):
     margem = 0.015 
     minx, miny, maxx, maxy = bounds[0]-margem, bounds[1]-margem, bounds[2]+margem, bounds[3]+margem
     
-    # Header adicionado para simular navegador e evitar bloqueio
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    
+    # Header e Verify False para contornar problemas de segurança do servidor do Exército
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     params = {"SERVICE": "WMS", "VERSION": "1.1.1", "REQUEST": "GetMap", "LAYERS": "ctm100", "STYLES": "", "SRS": "EPSG:4326", "BBOX": f"{minx},{miny},{maxx},{maxy}", "WIDTH": "1200", "HEIGHT": "1200", "FORMAT": "image/png"}
+    
     try:
-        # Timeout aumentado para 45s pois o Exército é lento
-        resp = requests.get(URL_WMS_EXERCITO, params=params, headers=headers, timeout=45)
+        # verify=False é crucial para o servidor do BDGex em cloud
+        resp = requests.get(URL_WMS_EXERCITO, params=params, headers=headers, timeout=45, verify=False)
         if resp.status_code == 200:
             img = Image.open(BytesIO(resp.content))
             fig, ax = plt.subplots(figsize=(12, 12))
@@ -296,9 +306,9 @@ st.markdown("##### Ferramenta de Monitoramento Unificado de Terras e Uso em MS")
 
 with st.expander("⚠️ AVISO LEGAL - VERSÃO BETA (Leia antes de usar)", expanded=True):
     st.warning("""
-    **ATENÇÃO: ESTA É UMA VERSÃO DE TESTE (BETA 3.5)**
+    **ATENÇÃO: ESTA É UMA VERSÃO DE TESTE (BETA 0.6)**
     1. **Fonte de Dados:** Este aplicativo consome dados públicos via APIs (WMS/WFS/REST). Instabilidades externas podem ocorrer.
-    2. **Caráter Auxiliar:** As informações aqui apresentadas servem para *triagem rápida* e **NÃO SUBSTITUEM** a consulta oficial aos sistemas do IMASUL.
+    2. **Caráter Auxiliar:** As informações aqui apresentadas servem para *triagem rápida* e **NÃO SUBSTITUEM** a consulta oficial.
     3. **Responsabilidade:** O uso das informações é de responsabilidade do analista.
     *Voe com segurança!* 🐦
     """)
@@ -346,7 +356,6 @@ if uploaded_file:
             st.markdown("### Monitoramento de Restrições Gerais")
             if st.button("🦅 Levantar Voo (Iniciar Varredura Rápida)", type="primary", use_container_width=True):
                 with st.spinner("🐦 Sobrevoando todas as bases simultaneamente..."):
-                    # AGORA USANDO A FUNÇÃO PARALELA
                     res, mapa = executar_varredura_paralela(BASES_GERAIS, dados_geo)
                     st.session_state['resultados_geral'] = res
                     st.session_state['mapa_geral'] = mapa
@@ -372,8 +381,6 @@ if uploaded_file:
 
         with tab2:
             st.markdown("### Mapeamento de Declividade")
-            st.caption("Imagem gerada diretamente dos servidores do IMASUL.")
-            st.markdown("""<div style='background-color:#262730;padding:10px;border-radius:5px;color:#FAFAFA;display:flex;gap:15px;flex-wrap:wrap;justify-content:center;border:1px solid #41424C;'><div><span style='color:#00a884;'>■</span> 0-5°</div><div><span style='color:#4c0073;'>■</span> 5-16°</div><div><span style='color:#ffeb00;'>■</span> 16-25°</div><div><span style='color:#ff3700;'>■</span> 25-45° (AUR)</div><div><span style='color:#000000;border:1px solid #fff;'>■</span> >45° (APP)</div></div>""", unsafe_allow_html=True)
             if st.button("⛰️ Mapear Relevo", use_container_width=True):
                 with st.spinner("🐦 O Mutum está calculando o esforço de voo..."):
                     st.session_state['fig_declividade'] = plotar_declividade_estatica(dados_geo['gdf_web'])
@@ -382,17 +389,41 @@ if uploaded_file:
 
         with tab3:
             st.markdown("### Cartografia & Hidrografia")
-            if st.button("🗺️ Consultar Cartas do Exército", use_container_width=True):
-                with st.spinner("🐦 Buscando referências cartográficas no BDGex (Isso pode demorar um pouco)..."):
-                    st.session_state['fig_cartas'] = plotar_cartas_exercito_estatica(dados_geo['gdf_web'])
-            if st.session_state['fig_cartas']:
-                st.pyplot(st.session_state['fig_cartas'], use_container_width=True)
+            
+            c_hidro1, c_hidro2 = st.columns(2)
+            
+            with c_hidro1:
+                st.info("🌊 **Análise de Cursos Hídricos**")
+                if st.button("🔍 Verificar Rios e Córregos (Vetorial)", use_container_width=True):
+                    with st.spinner("Analisando base de hidrografia..."):
+                        res_h, _ = executar_varredura_paralela(BASES_HIDRO, dados_geo)
+                        st.session_state['resultados_hidro'] = res_h
+                        st.session_state['fase_hidro_feita'] = True
+                
+                if st.session_state['fase_hidro_feita']:
+                    if st.session_state['resultados_hidro']:
+                        st.warning(f"⚠️ {len(st.session_state['resultados_hidro'])} trechos de rios detectados.")
+                        for r in st.session_state['resultados_hidro']:
+                            st.write(f"**Rio:** {r['Identificação']}")
+                            st.caption(f"Regime: {r['Extra'].get('Regime', 'N/D')}")
+                    else:
+                        st.success("✅ Nenhum rio da base oficial cruza o imóvel.")
+
+            with c_hidro2:
+                st.info("🗺️ **Carta do Exército**")
+                if st.button("🖼️ Carregar Mapa (BDGex)", use_container_width=True):
+                    with st.spinner("🐦 Conectando ao servidor do Exército (pode demorar)..."):
+                        st.session_state['fig_cartas'] = plotar_cartas_exercito_estatica(dados_geo['gdf_web'])
+                
+                if st.session_state.get('fig_cartas'):
+                    st.pyplot(st.session_state['fig_cartas'], use_container_width=True)
+                elif st.session_state.get('fig_cartas') is None and st.session_state.get('fase_cartas_tentou'):
+                     st.error("❌ Não foi possível carregar a imagem do BDGex (Erro de conexão ou timeout).")
 
         with tab4:
             st.markdown("### 🚨 Fiscalização, Calor e Alertas")
             if st.button("🔥 Rastrear Infrações e Calor", type="primary", use_container_width=True):
                 with st.spinner("🐦 O Mutum ativou a visão térmica (INPE) e o radar de infrações..."):
-                    # AGORA USANDO A FUNÇÃO PARALELA
                     res, mapa = executar_varredura_paralela(BASES_FISCALIZACAO, dados_geo)
                     st.session_state['resultados_fisc'] = res
                     st.session_state['mapa_fisc'] = mapa
@@ -450,11 +481,8 @@ if uploaded_file:
 
         with tab5:
             st.markdown("### 🍒 Licenciamento & Confronto de Dados")
-            st.caption("A Cereja do Bolo: Cruzamento entre o que foi autorizado (Licenças) e o que foi alertado (Fiscalização).")
-            
             if st.button("🍒 Cruzar Dados (Licenças vs Alertas)", type="primary", use_container_width=True):
                 with st.spinner("🐦 O Mutum está comparando a papelada com a realidade..."):
-                    # AGORA USANDO A FUNÇÃO PARALELA TAMBÉM
                     res_lic, mapa_lic = executar_varredura_paralela(BASES_LICENCAS, dados_geo)
                     st.session_state['resultados_lic'] = res_lic
                     st.session_state['mapa_lic'] = mapa_lic
