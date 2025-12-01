@@ -13,9 +13,6 @@ from shapely.ops import unary_union
 import folium
 from streamlit_folium import st_folium
 import urllib3
-import pandas as pd
-
-# Suprime avisos de SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- IMPORTAÇÕES PARA O PLOT ESTÁTICO ---
@@ -26,41 +23,6 @@ import matplotlib.patheffects as pe
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="M.U.T.U.M. - MS", page_icon="🐦", layout="wide")
-
-# --- DICIONÁRIO DE CLASSES (PORTARIA IMASUL 1404/2024) ---
-DICIONARIO_CLASSES_SIRIEMA = {
-    101: "Área Total do Imóvel",
-    102: "Área Certificada pelo INCRA",
-    103: "Remanescente de Vegetação Nativa",
-    104: "Ocupação Agrosilvipastoril (Pré-2008)",
-    105: "Ocupação por Outras Atividades",
-    106: "Ocupação Agrosilvipastoril (Pós-2008)",
-    113: "Área de Pousio",
-    114: "Pastagem Nativa",
-    115: "Sede do Imóvel",
-    122: "Curso D'água (10-50m)",
-    123: "Curso D'água (50-200m)",
-    126: "Lago/Lagoa Natural",
-    127: "Reservatório Artificial (Barramento)",
-    129: "Nascente/Olho D'água",
-    130: "Encosta > 45º",
-    134: "Vereda",
-    142: "Reserva Legal Aprovada/Averbada",
-    143: "Reserva Legal em Condomínio",
-    144: "Cota de Reserva Ambiental (CRA)",
-    145: "Perímetro de Matrícula Individualizada",
-    146: "Veg. Nativa para Compensação/TAC",
-    150: "APP (Legislação Estadual/Municipal)",
-    151: "Área Suprimida/A Suprimir",
-    152: "Terra Indígena",
-    153: "Área Quilombola",
-    154: "Unidade de Conservação",
-    155: "Área Embargada",
-    156: "Área Úmida Brejosa",
-    157: "Área Úmida Campo de Inundação",
-    160: "Área Prioritária Banhados",
-    173: "Informativo de PRADE"
-}
 
 # --- LISTAS DE BASES ---
 BASES_GERAIS = [
@@ -113,7 +75,7 @@ def buscar_valor_inteligente(attrs, lista_tentativas):
             return str(val)
     for key, val in attrs_lower.items():
         if ('nome' in key or 'nm_' in key) and val: return str(val)
-    return "Não identificado"
+    return ""  # Retorna vazio se não achar, para facilitar o agrupamento depois
 
 def parse_float_br(valor_str):
     try:
@@ -141,6 +103,7 @@ def consultar_wfs_icmbio(url, layer_name, bbox_list):
 def processar_uma_base(base, dados_imovel):
     resultados_parcial = []
     camadas_parcial = []
+    
     geom_utm_imovel = dados_imovel['geom_utm']
     area_imovel = dados_imovel['area_ha']
     
@@ -156,10 +119,15 @@ def processar_uma_base(base, dados_imovel):
         for feat in resp['features']:
             attrs = feat.get('attributes') or feat.get('properties')
             nome = buscar_valor_inteligente(attrs, base['colunas_nome'])
-            if not nome or nome == "N/D": nome = "Não identificado"
+            
+            # Se nome vier vazio, tenta padronizar
+            if not nome or nome == "N/D":
+                nome = "Não identificado"
+
             legis = "-"
             detalhes_extras = {}
             
+            # Extração de Metadados
             if "Licenças" in base['nome']:
                 detalhes_extras['Processo'] = buscar_valor_inteligente(attrs, ["num_processo", "processo"])
                 detalhes_extras['Atividade'] = buscar_valor_inteligente(attrs, ["atividade", "desc_ativ", "tipologia"])
@@ -193,7 +161,7 @@ def processar_uma_base(base, dados_imovel):
                     poly_base = shape(feat['geometry'])
                     area_txt = "Ponto no Imóvel"; pct_txt = "Foco/Ponto"
                 elif base['tipo'] == 'linha':
-                    poly_base = None
+                    poly_base = None 
                     if 'geometry' in feat and 'paths' in feat['geometry']:
                          area_txt = "Sim"; pct_txt = "Cruzamento"
                 else:
@@ -204,11 +172,17 @@ def processar_uma_base(base, dados_imovel):
             except: poly_base = None
 
             if base['tipo'] == 'linha' and area_txt == "Sim":
-                 resultados_parcial.append({"Base": base['nome'], "Identificação": nome, "Detalhes": legis, "Área (ha)": "Trecho Detectado", "Status": "Verificar APP", "Extra": detalhes_extras})
+                 resultados_parcial.append({
+                    "Base": base['nome'], "Identificação": nome, "Detalhes": legis,
+                    "Área (ha)": "Trecho Detectado", "Status": "Verificar APP",
+                    "Extra": detalhes_extras
+                })
+            
             elif poly_base:
                 try:
                     if not poly_base.is_valid: poly_base = poly_base.buffer(0)
                     interseccao = None
+                    
                     if base.get('tipo_fonte') == 'WFS':
                         aux_gdf = gpd.GeoDataFrame({'geometry': [poly_base]}, crs="EPSG:4674").to_crs(dados_imovel['crs_utm'])
                         interseccao = geom_utm_imovel.intersection(aux_gdf.geometry.iloc[0])
@@ -219,7 +193,9 @@ def processar_uma_base(base, dados_imovel):
                         area_calc = 0
                         if base['tipo'] == 'poligono':
                             area_calc = interseccao.area / 10000
-                            if area_calc < 0.5: continue # Filtro Anti-Vizinho
+                            # FILTRO ANTI-VIZINHO
+                            if area_calc < 0.5: continue 
+
                             area_txt = f"{area_calc:,.4f}".replace(",", "X").replace(".", ",").replace("X", ".")
                             pct_txt = f"{(area_calc/area_imovel)*100:.2f}%"
                         
@@ -227,8 +203,17 @@ def processar_uma_base(base, dados_imovel):
                         nome_camada = f"{base['nome']}: {nome}"
                         geojson_str = gdf_conf.to_crs(epsg=4326).to_json()
                         cor_atual = gerar_cor_aleatoria()
-                        camadas_parcial.append({"nome": nome_camada, "geojson": json.loads(geojson_str), "tipo": base['tipo'], "cor": cor_atual})
-                        resultados_parcial.append({"Base": base['nome'], "Identificação": nome, "Detalhes": legis, "Área (ha)": area_txt, "Status": pct_txt, "Extra": detalhes_extras})
+                        
+                        camadas_parcial.append({
+                            "nome": nome_camada, "geojson": json.loads(geojson_str), 
+                            "tipo": base['tipo'], "cor": cor_atual
+                        })
+                        
+                        resultados_parcial.append({
+                            "Base": base['nome'], "Identificação": nome, "Detalhes": legis,
+                            "Área (ha)": area_txt, "Status": pct_txt,
+                            "Extra": detalhes_extras
+                        })
                 except: pass
                 
     return resultados_parcial, camadas_parcial
@@ -270,7 +255,19 @@ def plotar_hidrografia_imasul_estatica(gdf_web):
     bounds = gdf_web.total_bounds
     margem = 0.02
     minx, miny, maxx, maxy = bounds[0]-margem, bounds[1]-margem, bounds[2]+margem, bounds[3]+margem
-    params = {"bbox": f"{minx},{miny},{maxx},{maxy}", "bboxSR": "4326", "layers": "show:12", "size": "1200,1200", "imageSR": "4326", "format": "png", "f": "image", "transparent": "false"}
+    
+    # layer 12 = Hidrografia
+    params = {
+        "bbox": f"{minx},{miny},{maxx},{maxy}",
+        "bboxSR": "4326",
+        "layers": "show:12",
+        "size": "1200,1200",
+        "imageSR": "4326",
+        "format": "png",
+        "f": "image",
+        "transparent": "false" 
+    }
+    
     try:
         resp = requests.get(URL_HIDRO_EXPORT, params=params, timeout=30)
         if resp.status_code == 200:
@@ -285,297 +282,301 @@ def plotar_hidrografia_imasul_estatica(gdf_web):
     except: return None
     return None
 
-# --- LEITURA DO ZIP ---
 @st.cache_data(show_spinner=False)
-def ler_arquivo_zip(file_bytes):
+def carregar_geometria_imovel(file_bytes):
     temp_dir = tempfile.mkdtemp()
     path_zip = os.path.join(temp_dir, "temp.zip")
     with open(path_zip, "wb") as f: f.write(file_bytes)
+    with zipfile.ZipFile(path_zip, 'r') as zip_ref: zip_ref.extractall(temp_dir)
+    arquivos_shp = [f for f in os.listdir(temp_dir) if f.lower().endswith('.shp')]
+    if not arquivos_shp: return None, "Nenhum .shp encontrado."
     try:
-        with zipfile.ZipFile(path_zip, 'r') as zip_ref: zip_ref.extractall(temp_dir)
-    except Exception as e: return None, f"Erro ao descompactar o ZIP: {str(e)}"
-
-    caminhos_shp = []
-    for root, dirs, files in os.walk(temp_dir):
-        for file in files:
-            if file.lower().endswith('.shp'):
-                caminhos_shp.append(os.path.join(root, file))
-    
-    if not caminhos_shp: return None, "Nenhum arquivo .shp encontrado no ZIP."
-        
-    try:
-        lista_gdfs = []
-        for shp_path in caminhos_shp:
-            try:
-                gdf_temp = gpd.read_file(shp_path)
-                gdf_temp = gdf_temp[gdf_temp.geometry.type.isin(['Polygon', 'MultiPolygon'])]
-                if not gdf_temp.empty:
-                    gdf_temp['origem_arquivo'] = os.path.basename(shp_path)
-                    lista_gdfs.append(gdf_temp)
-            except: continue
-        
-        if not lista_gdfs: return None, "Nenhum polígono válido encontrado."
-        
-        # Concatena sem se preocupar com CRS agora, tratamos na seleção
-        gdf_final = pd.concat(lista_gdfs, ignore_index=True)
-        return gdf_final, None
-
-    except Exception as e: return None, f"Erro ao juntar arquivos: {str(e)}"
-
-# --- PROCESSAMENTO FINAL ---
-def processar_geometria_selecionada(gdf_selecionado, epsg_codigo):
-    try:
-        if not gdf_selecionado.crs:
-            gdf_selecionado.set_crs(epsg=epsg_codigo, inplace=True)
-        else:
-            gdf_selecionado = gdf_selecionado.to_crs(epsg=epsg_codigo)
-            
-        geom_utm = gdf_selecionado.geometry.iloc[0]
-        
-        if geom_utm.geom_type == 'MultiPolygon':
-            geom_utm = max(geom_utm.geoms, key=lambda a: a.area)
-            
+        gdf = gpd.read_file(os.path.join(temp_dir, arquivos_shp[0]))
+        if not gdf.crs: gdf.set_crs(epsg=31981, inplace=True)
+        else: gdf = gdf.to_crs(epsg=31981)
+        gdf['geometry'] = gdf.geometry.buffer(0)
+        geom_utm = gdf.geometry.iloc[0]
         area_ha = geom_utm.area / 10000
-        
-        gdf_clean = gpd.GeoDataFrame({'geometry': [geom_utm]}, crs=gdf_selecionado.crs)
-        
-        gdf_geo = gdf_clean.to_crs(epsg=4674)
+        gdf_geo = gdf.to_crs(epsg=4674)
         geom_geo = gdf_geo.geometry.iloc[0]
         json_poly = json.dumps({"rings": [list(geom_geo.exterior.coords)], "spatialReference": {"wkid": 4674}})
         ponto = geom_geo.centroid
         json_point = json.dumps({"x": ponto.x, "y": ponto.y, "spatialReference": {"wkid": 4674}})
-        
-        gdf_folium = gdf_clean.to_crs(epsg=4326)
+        gdf_folium = gdf.to_crs(epsg=4326)
         geojson_folium = gdf_folium.to_json()
-        bounds = gdf_folium.total_bounds.tolist()
+        bounds = gdf_folium.total_bounds.tolist() 
         centro = [ponto.y, ponto.x]
         bounds_4674 = gdf_geo.total_bounds.tolist()
-        
-        return {
-            "geom_utm": geom_utm, "json_poly": json_poly, "json_point": json_point,
-            "area_ha": area_ha, "geojson_folium": geojson_folium, "gdf_web": gdf_folium,
-            "bounds": bounds, "bounds_4674": bounds_4674, "centro": centro, "crs_utm": gdf_clean.crs
-        }
-    except Exception as e: 
-        st.error(f"Erro de processamento: {e}")
-        return None
+        return {"geom_utm": geom_utm, "json_poly": json_poly, "json_point": json_point, "area_ha": area_ha, "geojson_folium": geojson_folium, "gdf_web": gdf_folium, "bounds": bounds, "bounds_4674": bounds_4674, "centro": centro, "crs_utm": gdf.crs}, None
+    except Exception as e: return None, str(e)
 
 # --- INTERFACE PRINCIPAL ---
 st.title("🐦 M.U.T.U.M. - Vigilante Ambiental")
 st.markdown("##### Ferramenta de Monitoramento Unificado de Terras e Uso em MS")
 
-with st.expander("⚠️ AVISO LEGAL - VERSÃO BETA 4.6 (Estável)", expanded=True):
-    st.warning("**ATENÇÃO:** Versão de Teste.")
+with st.expander("⚠️ AVISO LEGAL - VERSÃO BETA 0.6 (Leia antes de usar)", expanded=True):
+    st.warning("""
+    **ATENÇÃO: ESTA É UMA VERSÃO DE TESTE (BETA 0.6)**
+    1. **Fonte de Dados:** Este aplicativo consome dados públicos via APIs (WMS/WFS/REST). Instabilidades externas podem ocorrer.
+    2. **Caráter Auxiliar:** As informações aqui apresentadas servem para *triagem rápida* e **NÃO SUBSTITUEM** a consulta oficial.
+    3. **Responsabilidade:** O uso das informações é de responsabilidade do analista.
+    *Voe com segurança!* 🐦
+    """)
 
-uploaded_file = st.file_uploader("📂 Arraste o arquivo ZIP do CAR/Siriema", type="zip")
+uploaded_file = st.file_uploader("📂 Arraste seu Shapefile (.ZIP) para o ninho", type="zip")
 
-# Resetando Estado (CORREÇÃO DE KEYERROR AQUI)
 if 'arquivo_atual' not in st.session_state or st.session_state['arquivo_atual'] != uploaded_file:
-    st.session_state.clear()
     st.session_state['arquivo_atual'] = uploaded_file
-    # Inicializa variáveis para evitar KeyError
     st.session_state['resultados_geral'] = []
     st.session_state['mapa_geral'] = []
     st.session_state['fase_geral_feita'] = False
+    
     st.session_state['resultados_hidro'] = []
-    st.session_state['res_hidro'] = []
     st.session_state['fase_hidro_feita'] = False
+    
     st.session_state['resultados_fisc'] = []
-    st.session_state['res_fisc'] = []
     st.session_state['mapa_fisc'] = []
     st.session_state['fase_fisc_feita'] = False
+
     st.session_state['resultados_lic'] = []
-    st.session_state['res_lic'] = []
     st.session_state['mapa_lic'] = []
     st.session_state['fase_lic_feita'] = False
+    
     st.session_state['fig_declividade'] = None
     st.session_state['fig_cartas'] = None
-    st.session_state['fig_hidro'] = None
 
 if uploaded_file:
-    if 'gdf_bruto' not in st.session_state:
-        with st.spinner("Lendo arquivo..."):
-            gdf, erro = ler_arquivo_zip(uploaded_file.getvalue())
-            if erro: st.error(erro)
-            else: st.session_state['gdf_bruto'] = gdf
-
-    if 'gdf_bruto' in st.session_state:
-        gdf = st.session_state['gdf_bruto']
+    with st.spinner("🐦 O Mutum está analisando a geometria do seu arquivo..."):
+        dados_geo, erro = carregar_geometria_imovel(uploaded_file.getvalue())
+    
+    if erro: 
+        st.error(f"🍂 Ocorreu um erro ao pousar no arquivo: {erro}")
+    else:
+        st.info(f"📍 **Pouso confirmado!** Imóvel identificado com **{dados_geo['area_ha']:,.4f} ha**.")
         
-        st.write("---")
-        st.subheader("1. Configuração de Projeção")
-        crs_opcoes = {"SIRGAS 2000 / UTM 21S (EPSG:31981)": 31981, "SIRGAS 2000 / UTM 22S (EPSG:31982)": 31982}
-        epsg_escolhido = None
-        
-        # Tenta pegar o CRS do primeiro registro válido
-        crs_detectado = None
-        if isinstance(gdf, gpd.GeoDataFrame) and gdf.crs:
-             crs_detectado = gdf.crs
-        
-        if crs_detectado:
-            st.success(f"Projeção base detectada: {crs_detectado}")
-            epsg_escolhido = crs_detectado.to_epsg()
-            if epsg_escolhido not in [31981, 31982, 4674, 4326]:
-                st.warning("Projeção não-UTM. Será reprojetada para UTM 21S para cálculo.")
-                epsg_escolhido = 31981
-        else:
-            st.warning("⚠️ Sem projeção definida. Selecione o fuso:")
-            epsg_label = st.radio("Selecione o Fuso UTM:", list(crs_opcoes.keys()))
-            epsg_escolhido = crs_opcoes[epsg_label]
-
-        st.write("---")
-        st.subheader("2. Seleção da Geometria")
-        
-        opcoes_poligonos = {}
-        indice_padrao_idx = 0
-        
-        if epsg_escolhido:
-            for i, row in gdf.iterrows():
-                # Tenta pegar CLASSE ou Nome do Arquivo
-                nome_classe = "Polígono sem Classe"
-                origem = row.get('origem_arquivo', 'arquivo_desconhecido.shp')
-                
-                # Cálculo de área individual seguro
-                try:
-                    # Converte geometria única para UTM
-                    geo_utm = gpd.GeoSeries([row.geometry], crs=gdf.crs if gdf.crs else epsg_escolhido).to_crs(epsg=31981)
-                    area_val = geo_utm.area.iloc[0] / 10000
-                except: area_val = 0.0
-
-                if 'CLASSE' in gdf.columns:
-                    cod_classe = row['CLASSE']
-                    if pd.notnull(cod_classe):
-                        try:
-                            cod_int = int(cod_classe)
-                            desc = DICIONARIO_CLASSES_SIRIEMA.get(cod_int, f"Classe ({cod_int})")
-                            nome_classe = f"[{cod_int}] {desc}"
-                            if cod_int == 101: indice_padrao_idx = i
-                        except: nome_classe = str(cod_classe)
-                    else:
-                        nome_classe = f"Arquivo: {origem}"
-                else:
-                    nome_classe = f"Arquivo: {origem}"
-
-                label = f"ID {i}: {nome_classe} ({area_val:.2f} ha)"
-                opcoes_poligonos[label] = i
-        
-        if not opcoes_poligonos:
-            st.error("Aguardando definição de projeção...")
-        else:
-            label_selecionado = st.selectbox(
-                "Escolha o polígono:", 
-                list(opcoes_poligonos.keys()),
-                index=indice_padrao_idx if indice_padrao_idx < len(opcoes_poligonos) else 0
-            )
-            idx_escolhido = opcoes_poligonos[label_selecionado]
-            
-            if st.button("✅ Confirmar e Analisar", type="primary"):
-                gdf_selecionado = gdf.iloc[[idx_escolhido]].copy()
-                dados_geo = processar_geometria_selecionada(gdf_selecionado, epsg_escolhido)
-                if dados_geo:
-                    st.session_state['dados_geo'] = dados_geo
-                    st.session_state['analise_confirmada'] = True
-                    st.rerun()
-
-    # --- TELA DE ANÁLISE ---
-    if st.session_state.get('analise_confirmada') and 'dados_geo' in st.session_state:
-        dados_geo = st.session_state['dados_geo']
-        st.write("---")
-        st.info(f"📍 **Analisando:** {dados_geo['area_ha']:,.4f} ha")
-        
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔍 1. Restrições", "⛰️ 2. Declividade", "💧 3. Hidrografia", "🔥 4. Fiscalização/Calor", "🍒 5. Licenciamento"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "🔍 1. Restrições", 
+            "⛰️ 2. Declividade", 
+            "💧 3. Hidrografia", 
+            "🔥 4. Fiscalização/Calor", 
+            "🍒 5. Licenciamento"
+        ])
 
         with tab1:
-            st.markdown("### Restrições Gerais")
-            if st.button("🦅 Iniciar Varredura", type="primary", use_container_width=True):
-                with st.spinner("🐦 Sobrevoando bases..."):
+            st.markdown("### Monitoramento de Restrições Gerais")
+            if st.button("🦅 Levantar Voo (Iniciar Varredura Rápida)", type="primary", use_container_width=True):
+                with st.spinner("🐦 Sobrevoando todas as bases simultaneamente..."):
                     res, mapa = executar_varredura_paralela(BASES_GERAIS, dados_geo)
                     st.session_state['resultados_geral'] = res
                     st.session_state['mapa_geral'] = mapa
                     st.session_state['fase_geral_feita'] = True
-            if st.session_state.get('fase_geral_feita'):
+            
+            if st.session_state['fase_geral_feita']:
                 if st.session_state['resultados_geral']:
-                    st.error(f"⚠️ **{len(st.session_state['resultados_geral'])}** sobreposições.")
-                    st.dataframe(st.session_state['resultados_geral'], use_container_width=True)
-                else: st.success("✅ Horizonte limpo!")
-                m1 = folium.Map(location=dados_geo['centro'], zoom_start=12)
+                    st.error(f"⚠️ O Mutum avistou **{len(st.session_state['resultados_geral'])}** sobreposições na área.")
+                    df_show = [{k:v for k,v in r.items() if k!='Extra' and k!='Status'} for r in st.session_state['resultados_geral']]
+                    st.dataframe(df_show, use_container_width=True)
+                else: 
+                    st.success("✅ Horizonte limpo! O Mutum não detectou restrições gerais nesta área.")
+                
+                m1 = folium.Map(location=dados_geo['centro'])
+                m1.fit_bounds([[dados_geo['bounds'][1], dados_geo['bounds'][0]], [dados_geo['bounds'][3], dados_geo['bounds'][2]]])
                 folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Satélite').add_to(m1)
-                folium.GeoJson(dados_geo['geojson_folium'], style_function=lambda x: {'fillColor': '#ffff00', 'color': 'yellow', 'fillOpacity': 0.1, 'weight': 3}).add_to(m1)
-                for c in st.session_state['mapa_geral']: folium.GeoJson(c['geojson'], style_function=lambda x, col=c['cor']: {'fillColor': col, 'color': col}).add_to(m1)
+                folium.GeoJson(dados_geo['geojson_folium'], name="📍 Meu Imóvel", style_function=lambda x: {'fillColor': '#ffff00', 'color': '#ffff00', 'fillOpacity': 0.1, 'weight': 3}).add_to(m1)
+                for c in st.session_state['mapa_geral']:
+                    cor = c.get('cor', '#ff0000')
+                    folium.GeoJson(c['geojson'], name=c['nome'], style_function=lambda x, color=cor: {'fillColor': color, 'color': color, 'fillOpacity': 0.6, 'weight': 1}, tooltip=c['nome']).add_to(m1)
+                folium.LayerControl().add_to(m1)
                 st_folium(m1, width="100%", height=500, returned_objects=[])
 
         with tab2:
-            st.markdown("### Declividade")
-            if st.button("⛰️ Mapear", use_container_width=True):
-                with st.spinner("Calculando..."):
+            st.markdown("### Mapeamento de Declividade")
+            if st.button("⛰️ Mapear Relevo", use_container_width=True):
+                with st.spinner("🐦 O Mutum está calculando o esforço de voo..."):
                     st.session_state['fig_declividade'] = plotar_declividade_estatica(dados_geo['gdf_web'])
-            if st.session_state.get('fig_declividade'): st.pyplot(st.session_state['fig_declividade'], use_container_width=True)
+            if st.session_state['fig_declividade']:
+                st.pyplot(st.session_state['fig_declividade'], use_container_width=True)
 
         with tab3:
-            st.markdown("### Hidrografia")
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("🔍 Rios (Vetorial)", use_container_width=True):
-                    with st.spinner("Analisando..."):
+            st.markdown("### Hidrografia (SEMADESC/IMASUL)")
+            c_hidro1, c_hidro2 = st.columns(2)
+            with c_hidro1:
+                st.info("🌊 **Análise de Cursos Hídricos**")
+                if st.button("🔍 Verificar Rios (Vetorial)", use_container_width=True):
+                    with st.spinner("Analisando base de hidrografia..."):
                         res_h, _ = executar_varredura_paralela(BASES_HIDRO, dados_geo)
-                        st.session_state['res_hidro'] = res_h
-                        st.session_state['fase_hidro'] = True
-                if st.session_state.get('fase_hidro'):
-                    if st.session_state['res_hidro']:
+                        st.session_state['resultados_hidro'] = res_h
+                        st.session_state['fase_hidro_feita'] = True
+                
+                if st.session_state['fase_hidro_feita']:
+                    if st.session_state['resultados_hidro']:
+                        # --- LÓGICA DE AGRUPAMENTO DE RIOS ---
                         rios_dict = {}
-                        for r in st.session_state['res_hidro']:
-                            k = f"{r['Identificação']} ({r['Extra'].get('Regime','N/D')})"
-                            rios_dict[k] = rios_dict.get(k, 0) + 1
-                        st.warning(f"⚠️ {len(rios_dict)} corpos d'água.")
-                        for k, v in rios_dict.items(): st.write(f"- **{k}**: {v} trechos")
-                    else: st.success("✅ Nenhum rio cruzando.")
-            with c2:
-                if st.button("🖼️ Mapa (Raster)", use_container_width=True):
-                    with st.spinner("Gerando..."):
-                        st.session_state['fig_hidro'] = plotar_hidrografia_imasul_estatica(dados_geo['gdf_web'])
-                if st.session_state.get('fig_hidro'): st.pyplot(st.session_state['fig_hidro'], use_container_width=True)
+                        for r in st.session_state['resultados_hidro']:
+                            nome_rio = r['Identificação']
+                            if not nome_rio or nome_rio.strip() == "":
+                                nome_rio = "Não identificado"
+                            
+                            regime = r['Extra'].get('Regime', 'N/D')
+                            
+                            chave = f"{nome_rio} ({regime})"
+                            if chave not in rios_dict:
+                                rios_dict[chave] = 1
+                            else:
+                                rios_dict[chave] += 1
+                        
+                        st.warning(f"⚠️ Foram detectados **{len(rios_dict)}** corpos d'água distintos cruzando o imóvel.")
+                        
+                        # Exibe lista consolidada
+                        for desc, count in rios_dict.items():
+                            st.markdown(f"- **{desc}**: {count} segmento(s) mapeado(s).")
+                    else: 
+                        st.success("✅ Nenhum rio da base oficial cruza o imóvel.")
+
+            with c_hidro2:
+                st.info("🗺️ **Mapa de Hidrografia (Raster)**")
+                if st.button("🖼️ Carregar Mapa SEMADESC", use_container_width=True):
+                    with st.spinner("🐦 Gerando mapa estático dos rios..."):
+                        st.session_state['fig_cartas'] = plotar_hidrografia_imasul_estatica(dados_geo['gdf_web'])
+                if st.session_state.get('fig_cartas'):
+                    st.pyplot(st.session_state['fig_cartas'], use_container_width=True)
 
         with tab4:
-            st.markdown("### Fiscalização")
-            if st.button("🔥 Rastrear", type="primary", use_container_width=True):
-                with st.spinner("Analisando..."):
+            st.markdown("### 🚨 Fiscalização, Calor e Alertas")
+            if st.button("🔥 Rastrear Infrações e Calor", type="primary", use_container_width=True):
+                with st.spinner("🐦 O Mutum ativou a visão térmica (INPE) e o radar de infrações..."):
                     res, mapa = executar_varredura_paralela(BASES_FISCALIZACAO, dados_geo)
-                    st.session_state['res_fisc'] = res
-                    st.session_state['map_fisc'] = mapa
-                    st.session_state['fase_fisc'] = True
-            if st.session_state.get('fase_fisc'):
-                if st.session_state['res_fisc']:
-                    st.error(f"🔥 {len(st.session_state['res_fisc'])} registros encontrados.")
-                    st.dataframe(st.session_state['res_fisc'], use_container_width=True)
-                    m4 = folium.Map(location=dados_geo['centro'], zoom_start=12)
+                    st.session_state['resultados_fisc'] = res
+                    st.session_state['mapa_fisc'] = mapa
+                    st.session_state['fase_fisc_feita'] = True
+            
+            if st.session_state['fase_fisc_feita']:
+                if st.session_state['resultados_fisc']:
+                    agrupados = {}
+                    for item in st.session_state['resultados_fisc']:
+                        chave = f"{item['Base']} | ID: {item['Identificação']}"
+                        try:
+                            if "Ponto" in item['Área (ha)'] or "Trecho" in item['Área (ha)']: area_float = 0
+                            else: area_float = parse_float_br(item['Área (ha)'])
+                        except: area_float = 0
+                        if chave not in agrupados: agrupados[chave] = {'dados': item, 'area_total': area_float, 'fragmentos': 1}
+                        else:
+                            agrupados[chave]['area_total'] += area_float
+                            agrupados[chave]['fragmentos'] += 1
+                    
+                    st.error(f"🔥 Alerta no Ninho! Foram encontrados **{len(agrupados)}** registros de infração, calor ou alerta.")
+                    for chave, obj in agrupados.items():
+                        item = obj['dados']
+                        area_str = "Ponto/Trecho" if "Ponto" in item['Área (ha)'] else f"{obj['area_total']:,.4f} ha".replace(",", "X").replace(".", ",").replace("X", ".")
+                        titulo = f"🚫 {chave} - {area_str}"
+                        with st.expander(titulo):
+                            d = item.get('Extra', {})
+                            if "MapBiomas" in item['Base']:
+                                st.markdown(f"**Data Detecção:** {d.get('Data Detecção', '-')}")
+                                st.markdown(f"**Bioma:** {d.get('Bioma', '-')}")
+                            elif "Focos de Calor" in item['Base']:
+                                st.markdown(f"**Satélite:** {d.get('Satélite', '-')}")
+                                st.markdown(f"**Data/Hora:** {d.get('Data Hora', '-')}")
+                            else:
+                                c1, c2 = st.columns(2)
+                                with c1:
+                                    st.markdown(f"**Autuado:** {d.get('Autuado', '-')}")
+                                    st.markdown(f"**CPF/CNPJ:** {d.get('CPF_CNPJ', '-')}")
+                                with c2:
+                                    st.markdown(f"**Data:** {d.get('Data', '-')}")
+                                    st.markdown(f"**Infração:** {d.get('Infração', '-')}")
+                    
+                    m4 = folium.Map(location=dados_geo['centro'])
+                    m4.fit_bounds([[dados_geo['bounds'][1], dados_geo['bounds'][0]], [dados_geo['bounds'][3], dados_geo['bounds'][2]]])
                     folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Satélite').add_to(m4)
-                    folium.GeoJson(dados_geo['geojson_folium'], style_function=lambda x: {'fillColor': 'yellow', 'color': 'yellow'}).add_to(m4)
-                    for c in st.session_state['map_fisc']:
-                        if c['tipo']=='ponto': folium.CircleMarker([c['geojson']['features'][0]['geometry']['coordinates'][1], c['geojson']['features'][0]['geometry']['coordinates'][0]], radius=5, color='red').add_to(m4)
-                        else: folium.GeoJson(c['geojson'], style_function=lambda x: {'fillColor': 'red', 'color': 'red'}).add_to(m4)
+                    folium.GeoJson(dados_geo['geojson_folium'], name="📍 Meu Imóvel", style_function=lambda x: {'fillColor': '#ffff00', 'color': '#ffff00', 'fillOpacity': 0.1, 'weight': 3}).add_to(m4)
+                    for c in st.session_state['mapa_fisc']:
+                        cor = c.get('cor', '#8B0000')
+                        if c['tipo'] == 'ponto':
+                            folium.CircleMarker(location=[c['geojson']['features'][0]['geometry']['coordinates'][1], c['geojson']['features'][0]['geometry']['coordinates'][0]], radius=5, color='orange', fill=True, tooltip="Foco de Calor").add_to(m4)
+                        else:
+                            folium.GeoJson(c['geojson'], name=c['nome'], style_function=lambda x, color=cor: {'fillColor': color, 'color': color, 'fillOpacity': 0.7, 'weight': 2}, tooltip=c['nome']).add_to(m4)
+                    folium.LayerControl().add_to(m4)
                     st_folium(m4, width="100%", height=500, returned_objects=[])
-                else: st.success("✅ Nada consta.")
+                else: st.success("✅ Tudo calmo! O Mutum não encontrou passivos ambientais ou fogo recente.")
 
         with tab5:
-            st.markdown("### Licenciamento")
-            if st.button("🍒 Cruzar Dados", type="primary", use_container_width=True):
-                with st.spinner("Analisando..."):
-                    res, mapa = executar_varredura_paralela(BASES_LICENCAS, dados_geo)
-                    st.session_state['res_lic'] = res
-                    st.session_state['map_lic'] = mapa
-                    st.session_state['fase_lic'] = True
-            if st.session_state.get('fase_lic'):
-                if st.session_state['res_lic']:
-                    st.success(f"📄 {len(st.session_state['res_lic'])} licenças encontradas.")
-                    st.dataframe(st.session_state['res_lic'], use_container_width=True)
-                else: st.info("ℹ️ Nenhuma licença digital encontrada.")
+            st.markdown("### 🍒 Licenciamento & Confronto de Dados")
+            if st.button("🍒 Cruzar Dados (Licenças vs Alertas)", type="primary", use_container_width=True):
+                with st.spinner("🐦 O Mutum está comparando a papelada com a realidade..."):
+                    res_lic, mapa_lic = executar_varredura_paralela(BASES_LICENCAS, dados_geo)
+                    st.session_state['resultados_lic'] = res_lic
+                    st.session_state['mapa_lic'] = mapa_lic
+                    st.session_state['fase_lic_feita'] = True
+            
+            if st.session_state['fase_lic_feita']:
+                if st.session_state['resultados_lic']:
+                    st.success(f"📄 O Mutum encontrou **{len(st.session_state['resultados_lic'])}** licenças emitidas para esta área.")
+                    lista_display = []
+                    for lic in st.session_state['resultados_lic']:
+                        d = lic.get('Extra', {})
+                        lista_display.append({
+                            "Documento": lic['Identificação'],
+                            "Tipo": d.get('Tipo Licença', '-'),
+                            "Atividade": d.get('Atividade', '-'),
+                            "Área (ha)": lic['Área (ha)']
+                        })
+                    st.dataframe(lista_display, use_container_width=True)
+                else:
+                    st.info("ℹ️ Nenhuma licença digital encontrada no sistema para esta área.")
+
+                st.divider()
+                st.markdown("#### ⚔️ O Veredito do Mutum (Confronto)")
                 
-                m5 = folium.Map(location=dados_geo['centro'], zoom_start=12)
-                folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Satélite').add_to(m5)
-                folium.GeoJson(dados_geo['geojson_folium'], style_function=lambda x: {'fillColor': 'none', 'color': 'yellow'}).add_to(m5)
-                if st.session_state.get('map_lic'):
-                    for c in st.session_state['map_lic']: folium.GeoJson(c['geojson'], style_function=lambda x: {'fillColor': 'green', 'color': 'green'}).add_to(m5)
-                if st.session_state.get('map_fisc'):
-                    for c in st.session_state['map_fisc']:
-                         if c['tipo']!='ponto': folium.GeoJson(c['geojson'], style_function=lambda x: {'fillColor': 'red', 'color': 'red'}).add_to(m5)
-                st_folium(m5, width="100%", height=600, returned_objects=[])
+                if not st.session_state.get('fase_fisc_feita'):
+                    st.warning("⚠️ O Mutum precisa visitar a aba **'4. Fiscalização'** antes de dar o veredito.")
+                else:
+                    if not st.session_state['resultados_fisc']:
+                        st.success("✅ Sem alertas de fiscalização para confrontar. Aparentemente tudo regular!")
+                    else:
+                        alertas_sem_licenca = 0
+                        for alerta_geo in st.session_state['mapa_fisc']:
+                            if alerta_geo['tipo'] == 'ponto': continue
+                            try:
+                                geom_raw_alerta = alerta_geo['geojson']['features'][0]['geometry']
+                                shape_alerta = shape(geom_raw_alerta)
+                                area_alerta = shape_alerta.area
+                                area_interseccao_total = 0
+                                licencas_cobertura = []
+                                for lic_geo in st.session_state['mapa_lic']:
+                                    geom_raw_lic = lic_geo['geojson']['features'][0]['geometry']
+                                    shape_lic = shape(geom_raw_lic)
+                                    intersec = shape_alerta.intersection(shape_lic)
+                                    if not intersec.is_empty:
+                                        area_interseccao_total += intersec.area
+                                        licencas_cobertura.append(lic_geo['nome'])
+                                pct_coberto = (area_interseccao_total / area_alerta) * 100 if area_alerta > 0 else 0
+                                nome_alerta = alerta_geo['nome']
+                                if pct_coberto > 90:
+                                    st.success(f"✅ **Supressão Autorizada:** O alerta '{nome_alerta}' está {pct_coberto:.1f}% coberto pelas licenças.")
+                                elif pct_coberto > 5:
+                                    st.warning(f"⚠️ **Atenção Parcial:** O alerta '{nome_alerta}' tem apenas {pct_coberto:.1f}% de cobertura.")
+                                else:
+                                    st.error(f"🚨 **Passivo Identificado:** O alerta '{nome_alerta}' NÃO possui cobertura de licença.")
+                                    alertas_sem_licenca += 1
+                            except: pass
+                        
+                        if alertas_sem_licenca > 0:
+                            st.markdown(f"**Resumo:** O Mutum detectou **{alertas_sem_licenca}** polígonos suspeitos sem licença digital correspondente.")
+                    
+                    m5 = folium.Map(location=dados_geo['centro'])
+                    m5.fit_bounds([[dados_geo['bounds'][1], dados_geo['bounds'][0]], [dados_geo['bounds'][3], dados_geo['bounds'][2]]])
+                    folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Satélite').add_to(m5)
+                    folium.GeoJson(dados_geo['geojson_folium'], style_function=lambda x: {'fillColor': 'none', 'color': 'yellow', 'weight': 2}).add_to(m5)
+                    
+                    if st.session_state['mapa_lic']:
+                        for c in st.session_state['mapa_lic']:
+                            folium.GeoJson(c['geojson'], name=f"Licença: {c['nome']}", style_function=lambda x: {'fillColor': '#00FF00', 'color': '#006400', 'fillOpacity': 0.4, 'weight': 1}, tooltip=c['nome']).add_to(m5)
+                    
+                    if st.session_state['mapa_fisc']:
+                        for c in st.session_state['mapa_fisc']:
+                            if c['tipo'] != 'ponto':
+                                folium.GeoJson(c['geojson'], name=f"Alerta: {c['nome']}", style_function=lambda x: {'fillColor': '#FF0000', 'color': '#8B0000', 'fillOpacity': 0.6, 'weight': 1}, tooltip=c['nome']).add_to(m5)
+                        
+                    folium.LayerControl().add_to(m5)
+                    st_folium(m5, width="100%", height=600, returned_objects=[])
