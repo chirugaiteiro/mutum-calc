@@ -285,7 +285,7 @@ def plotar_hidrografia_imasul_estatica(gdf_web):
     except: return None
     return None
 
-# --- LEITURA DO ZIP ---
+# --- LEITURA DO ZIP (AGORA MULTI-ARQUIVO) ---
 @st.cache_data(show_spinner=False)
 def ler_arquivo_zip(file_bytes):
     temp_dir = tempfile.mkdtemp()
@@ -304,11 +304,28 @@ def ler_arquivo_zip(file_bytes):
     if not caminhos_shp: return None, "Nenhum arquivo .shp encontrado no ZIP."
         
     try:
-        gdf = gpd.read_file(caminhos_shp[0])
-        gdf = gdf[gdf.geometry.type.isin(['Polygon', 'MultiPolygon'])]
-        if gdf.empty: return None, "O arquivo .shp encontrado não contém polígonos."
-        return gdf, None
-    except Exception as e: return None, f"Erro ao ler o shapefile: {str(e)}"
+        # --- NOVA LÓGICA: Ler TODOS os shapefiles e concatenar ---
+        lista_gdfs = []
+        for shp_path in caminhos_shp:
+            try:
+                gdf_temp = gpd.read_file(shp_path)
+                # Filtra apenas polígonos
+                gdf_temp = gdf_temp[gdf_temp.geometry.type.isin(['Polygon', 'MultiPolygon'])]
+                if not gdf_temp.empty:
+                    # Adiciona nome do arquivo original para identificação se não tiver CLASSE
+                    gdf_temp['origem_arquivo'] = os.path.basename(shp_path)
+                    lista_gdfs.append(gdf_temp)
+            except:
+                continue # Pula arquivos corrompidos ou ilegíveis
+        
+        if not lista_gdfs:
+            return None, "Nenhum polígono válido encontrado nos shapefiles."
+            
+        # Concatena tudo em um único GeoDataFrame (pode ter CRSs mistos, trataremos na seleção)
+        gdf_final = pd.concat(lista_gdfs, ignore_index=True)
+        return gdf_final, None
+
+    except Exception as e: return None, f"Erro ao processar shapefiles: {str(e)}"
 
 # --- PROCESSAMENTO FINAL ---
 def processar_geometria_selecionada(gdf_selecionado, epsg_codigo):
@@ -320,14 +337,11 @@ def processar_geometria_selecionada(gdf_selecionado, epsg_codigo):
             
         geom_utm = gdf_selecionado.geometry.iloc[0]
         
-        # --- CORREÇÃO MULTIPOLYGON ---
         if geom_utm.geom_type == 'MultiPolygon':
-            # Pega o maior polígono do grupo (Gleba Principal)
             geom_utm = max(geom_utm.geoms, key=lambda a: a.area)
             
         area_ha = geom_utm.area / 10000
         
-        # Recria GeoDataFrame com geometria limpa (apenas o maior pedaço se era Multi)
         gdf_clean = gpd.GeoDataFrame({'geometry': [geom_utm]}, crs=gdf_selecionado.crs)
         
         gdf_geo = gdf_clean.to_crs(epsg=4674)
@@ -355,8 +369,8 @@ def processar_geometria_selecionada(gdf_selecionado, epsg_codigo):
 st.title("🐦 M.U.T.U.M. - Vigilante Ambiental")
 st.markdown("##### Ferramenta de Monitoramento Unificado de Terras e Uso em MS")
 
-with st.expander("⚠️ AVISO LEGAL - VERSÃO BETA 4.3 (Correção de Menu)", expanded=True):
-    st.warning("**ATENÇÃO:** Esta versão (BETA 4.3) corrige o travamento na seleção de polígonos.")
+with st.expander("⚠️ AVISO LEGAL - VERSÃO BETA 4.4 (Multicamadas)", expanded=True):
+    st.warning("**ATENÇÃO:** Esta versão (BETA 4.4) lê e combina **TODOS** os shapefiles encontrados no ZIP.")
 
 uploaded_file = st.file_uploader("📂 Arraste o arquivo ZIP do CAR/Siriema", type="zip")
 
@@ -366,7 +380,7 @@ if 'arquivo_atual' not in st.session_state or st.session_state['arquivo_atual'] 
 
 if uploaded_file:
     if 'gdf_bruto' not in st.session_state:
-        with st.spinner("Lendo arquivo..."):
+        with st.spinner("Varrendo ZIP em busca de todos os polígonos..."):
             gdf, erro = ler_arquivo_zip(uploaded_file.getvalue())
             if erro: st.error(erro)
             else: st.session_state['gdf_bruto'] = gdf
@@ -379,9 +393,14 @@ if uploaded_file:
         crs_opcoes = {"SIRGAS 2000 / UTM 21S (EPSG:31981)": 31981, "SIRGAS 2000 / UTM 22S (EPSG:31982)": 31982}
         epsg_escolhido = None
         
-        if gdf.crs:
-            st.success(f"Projeção detectada: {gdf.crs}")
-            epsg_escolhido = gdf.crs.to_epsg()
+        # Tenta pegar o CRS do primeiro registro válido
+        crs_detectado = None
+        if isinstance(gdf, gpd.GeoDataFrame) and gdf.crs:
+             crs_detectado = gdf.crs
+        
+        if crs_detectado:
+            st.success(f"Projeção base detectada: {crs_detectado}")
+            epsg_escolhido = crs_detectado.to_epsg()
             if epsg_escolhido not in [31981, 31982, 4674, 4326]:
                 st.warning("Projeção não-UTM. Será reprojetada para UTM 21S para cálculo.")
                 epsg_escolhido = 31981
@@ -396,23 +415,12 @@ if uploaded_file:
         opcoes_poligonos = {}
         indice_padrao_idx = 0
         
-        # --- CÁLCULO DE ÁREA VETORIZADO E SEGURO (CORREÇÃO AQUI) ---
         if epsg_escolhido:
-            # Cria cópia para não alterar original antes da hora
-            gdf_display = gdf.copy()
-            if not gdf_display.crs:
-                gdf_display.set_crs(epsg=epsg_escolhido, inplace=True)
-            
-            # Projeta tudo de uma vez para calcular área (rápido e sem erro de loop)
-            try:
-                gdf_display = gdf_display.to_crs(epsg=31981)
-                areas = gdf_display.area / 10000
-            except:
-                areas = [0] * len(gdf)
-
+            # Loop simples para montar menu (sem processamento pesado)
             for i, row in gdf.iterrows():
+                # Tenta pegar CLASSE ou Nome do Arquivo
                 nome_classe = "Polígono sem Classe"
-                area_val = areas.iloc[i] if i < len(areas) else 0
+                origem = row.get('origem_arquivo', 'arquivo_desconhecido.shp')
                 
                 if 'CLASSE' in gdf.columns:
                     cod_classe = row['CLASSE']
@@ -423,8 +431,13 @@ if uploaded_file:
                             nome_classe = f"[{cod_int}] {desc}"
                             if cod_int == 101: indice_padrao_idx = i
                         except: nome_classe = str(cod_classe)
-                
-                label = f"ID {i}: {nome_classe} ({area_val:.2f} ha)"
+                    else:
+                        nome_classe = f"Arquivo: {origem}" # Usa nome do arquivo se não tiver classe
+                else:
+                    nome_classe = f"Arquivo: {origem}"
+
+                # Área aproximada (cálculo rápido sem reprojeção complexa para o menu)
+                label = f"ID {i}: {nome_classe}"
                 opcoes_poligonos[label] = i
         
         if not opcoes_poligonos:
