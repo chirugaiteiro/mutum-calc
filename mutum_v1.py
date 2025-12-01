@@ -121,6 +121,7 @@ def parse_float_br(valor_str):
         return float(valor_str.replace('.', '').replace(',', '.'))
     except: return 0.0
 
+# --- FUNÇÕES DE REQUISIÇÃO ---
 def consultar_api_imasul(url, geometry_json, geometry_type):
     params = {'f': 'json', 'geometry': geometry_json, 'geometryType': geometry_type, 'spatialRel': 'esriSpatialRelIntersects', 'outFields': '*', 'returnGeometry': 'true', 'outSR': '31981'}
     try:
@@ -285,64 +286,85 @@ def plotar_hidrografia_imasul_estatica(gdf_web):
     except: return None
     return None
 
-# --- LEITURA DO ZIP (AGORA MULTI-ARQUIVO) ---
+# --- LEITURA DO ZIP ROBUSTA (V.4.5) ---
 @st.cache_data(show_spinner=False)
-def ler_arquivo_zip(file_bytes):
+def ler_arquivo_zip_robusto(file_bytes):
     temp_dir = tempfile.mkdtemp()
     path_zip = os.path.join(temp_dir, "temp.zip")
+    
     with open(path_zip, "wb") as f: f.write(file_bytes)
+    
     try:
         with zipfile.ZipFile(path_zip, 'r') as zip_ref: zip_ref.extractall(temp_dir)
-    except Exception as e: return None, f"Erro ao descompactar o ZIP: {str(e)}"
+    except Exception as e:
+        return None, f"Erro ao descompactar: {e}", []
 
     caminhos_shp = []
+    # 1. Encontra todos os SHPs
     for root, dirs, files in os.walk(temp_dir):
         for file in files:
             if file.lower().endswith('.shp'):
                 caminhos_shp.append(os.path.join(root, file))
     
-    if not caminhos_shp: return None, "Nenhum arquivo .shp encontrado no ZIP."
-        
-    try:
-        # --- NOVA LÓGICA: Ler TODOS os shapefiles e concatenar ---
-        lista_gdfs = []
-        for shp_path in caminhos_shp:
-            try:
-                gdf_temp = gpd.read_file(shp_path)
-                # Filtra apenas polígonos
-                gdf_temp = gdf_temp[gdf_temp.geometry.type.isin(['Polygon', 'MultiPolygon'])]
-                if not gdf_temp.empty:
-                    # Adiciona nome do arquivo original para identificação se não tiver CLASSE
-                    gdf_temp['origem_arquivo'] = os.path.basename(shp_path)
-                    lista_gdfs.append(gdf_temp)
-            except:
-                continue # Pula arquivos corrompidos ou ilegíveis
-        
-        if not lista_gdfs:
-            return None, "Nenhum polígono válido encontrado nos shapefiles."
-            
-        # Concatena tudo em um único GeoDataFrame (pode ter CRSs mistos, trataremos na seleção)
-        gdf_final = pd.concat(lista_gdfs, ignore_index=True)
-        return gdf_final, None
+    if not caminhos_shp:
+        return None, "Nenhum arquivo .shp encontrado.", []
 
-    except Exception as e: return None, f"Erro ao processar shapefiles: {str(e)}"
+    lista_gdfs = []
+    log_arquivos = [] # Para o debug do usuário
+
+    # 2. Lê cada SHP individualmente
+    for shp in caminhos_shp:
+        nome_arq = os.path.basename(shp)
+        try:
+            gdf_temp = gpd.read_file(shp)
+            
+            # 3. Filtra Polígonos
+            gdf_poly = gdf_temp[gdf_temp.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy()
+            
+            if not gdf_poly.empty:
+                # 4. Standardiza CRS para WGS84 (4674) para permitir concatenação limpa
+                # Se não tiver CRS, assume 4674 provisoriamente (será corrigido na seleção se errado)
+                if not gdf_poly.crs:
+                    gdf_poly.set_crs(epsg=4674, inplace=True)
+                else:
+                    gdf_poly = gdf_poly.to_crs(epsg=4674)
+                
+                # 5. Adiciona coluna de origem OBRIGATORIAMENTE
+                gdf_poly['origem_arquivo'] = nome_arq
+                
+                lista_gdfs.append(gdf_poly)
+                log_arquivos.append(f"✅ {nome_arq}: {len(gdf_poly)} polígonos importados.")
+            else:
+                log_arquivos.append(f"⚠️ {nome_arq}: Ignorado (não contém polígonos).")
+        except Exception as e:
+            log_arquivos.append(f"❌ {nome_arq}: Erro de leitura ({str(e)}).")
+
+    if not lista_gdfs:
+        return None, "Nenhum polígono válido encontrado nos arquivos.", log_arquivos
+
+    # 6. Concatena tudo
+    try:
+        gdf_final = pd.concat(lista_gdfs, ignore_index=True)
+        return gdf_final, None, log_arquivos
+    except Exception as e:
+        return None, f"Erro ao juntar arquivos: {e}", log_arquivos
 
 # --- PROCESSAMENTO FINAL ---
 def processar_geometria_selecionada(gdf_selecionado, epsg_codigo):
     try:
-        if not gdf_selecionado.crs:
-            gdf_selecionado.set_crs(epsg=epsg_codigo, inplace=True)
-        else:
-            gdf_selecionado = gdf_selecionado.to_crs(epsg=epsg_codigo)
+        # Reprojeta para o sistema de coordenadas escolhido pelo usuário para cálculo de área
+        # Como padronizamos em 4674 na leitura, agora convertemos para a UTM escolhida
+        gdf_utm = gdf_selecionado.to_crs(epsg=epsg_codigo)
             
-        geom_utm = gdf_selecionado.geometry.iloc[0]
+        geom_utm = gdf_utm.geometry.iloc[0]
         
         if geom_utm.geom_type == 'MultiPolygon':
             geom_utm = max(geom_utm.geoms, key=lambda a: a.area)
             
         area_ha = geom_utm.area / 10000
         
-        gdf_clean = gpd.GeoDataFrame({'geometry': [geom_utm]}, crs=gdf_selecionado.crs)
+        # Cria GDF limpo para visualização
+        gdf_clean = gpd.GeoDataFrame({'geometry': [geom_utm]}, crs=gdf_utm.crs)
         
         gdf_geo = gdf_clean.to_crs(epsg=4674)
         geom_geo = gdf_geo.geometry.iloc[0]
@@ -369,8 +391,8 @@ def processar_geometria_selecionada(gdf_selecionado, epsg_codigo):
 st.title("🐦 M.U.T.U.M. - Vigilante Ambiental")
 st.markdown("##### Ferramenta de Monitoramento Unificado de Terras e Uso em MS")
 
-with st.expander("⚠️ AVISO LEGAL - VERSÃO BETA 4.4 (Multicamadas)", expanded=True):
-    st.warning("**ATENÇÃO:** Esta versão (BETA 4.4) lê e combina **TODOS** os shapefiles encontrados no ZIP.")
+with st.expander("⚠️ AVISO LEGAL - VERSÃO BETA 4.5", expanded=True):
+    st.warning("**ATENÇÃO:** Esta versão (BETA 4.5) inclui diagnóstico de arquivos e correção na leitura múltipla do CAR.")
 
 uploaded_file = st.file_uploader("📂 Arraste o arquivo ZIP do CAR/Siriema", type="zip")
 
@@ -380,10 +402,17 @@ if 'arquivo_atual' not in st.session_state or st.session_state['arquivo_atual'] 
 
 if uploaded_file:
     if 'gdf_bruto' not in st.session_state:
-        with st.spinner("Varrendo ZIP em busca de todos os polígonos..."):
-            gdf, erro = ler_arquivo_zip(uploaded_file.getvalue())
+        with st.spinner("Analisando estrutura do ZIP..."):
+            gdf, erro, log = ler_arquivo_zip_robusto(uploaded_file.getvalue())
+            st.session_state['log_arquivos'] = log
             if erro: st.error(erro)
             else: st.session_state['gdf_bruto'] = gdf
+
+    # Mostra log de arquivos encontrados (Diagnóstico)
+    if 'log_arquivos' in st.session_state:
+        with st.expander("📋 Relatório de Importação de Arquivos (Clique para ver)", expanded=False):
+            for linha in st.session_state['log_arquivos']:
+                st.write(linha)
 
     if 'gdf_bruto' in st.session_state:
         gdf = st.session_state['gdf_bruto']
@@ -391,23 +420,10 @@ if uploaded_file:
         st.write("---")
         st.subheader("1. Configuração de Projeção")
         crs_opcoes = {"SIRGAS 2000 / UTM 21S (EPSG:31981)": 31981, "SIRGAS 2000 / UTM 22S (EPSG:31982)": 31982}
-        epsg_escolhido = None
         
-        # Tenta pegar o CRS do primeiro registro válido
-        crs_detectado = None
-        if isinstance(gdf, gpd.GeoDataFrame) and gdf.crs:
-             crs_detectado = gdf.crs
-        
-        if crs_detectado:
-            st.success(f"Projeção base detectada: {crs_detectado}")
-            epsg_escolhido = crs_detectado.to_epsg()
-            if epsg_escolhido not in [31981, 31982, 4674, 4326]:
-                st.warning("Projeção não-UTM. Será reprojetada para UTM 21S para cálculo.")
-                epsg_escolhido = 31981
-        else:
-            st.warning("⚠️ Sem projeção definida. Selecione o fuso:")
-            epsg_label = st.radio("Selecione o Fuso UTM:", list(crs_opcoes.keys()))
-            epsg_escolhido = crs_opcoes[epsg_label]
+        # Como padronizamos para 4674 na leitura, pedimos a UTM de destino para cálculo
+        epsg_label = st.radio("Selecione o Fuso UTM correto para cálculo de área:", list(crs_opcoes.keys()))
+        epsg_escolhido = crs_opcoes[epsg_label]
 
         st.write("---")
         st.subheader("2. Seleção da Geometria")
@@ -415,48 +431,49 @@ if uploaded_file:
         opcoes_poligonos = {}
         indice_padrao_idx = 0
         
-        if epsg_escolhido:
-            # Loop simples para montar menu (sem processamento pesado)
-            for i, row in gdf.iterrows():
-                # Tenta pegar CLASSE ou Nome do Arquivo
-                nome_classe = "Polígono sem Classe"
-                origem = row.get('origem_arquivo', 'arquivo_desconhecido.shp')
-                
-                if 'CLASSE' in gdf.columns:
-                    cod_classe = row['CLASSE']
-                    if pd.notnull(cod_classe):
-                        try:
-                            cod_int = int(cod_classe)
-                            desc = DICIONARIO_CLASSES_SIRIEMA.get(cod_int, f"Classe ({cod_int})")
-                            nome_classe = f"[{cod_int}] {desc}"
-                            if cod_int == 101: indice_padrao_idx = i
-                        except: nome_classe = str(cod_classe)
-                    else:
-                        nome_classe = f"Arquivo: {origem}" # Usa nome do arquivo se não tiver classe
+        # Calcula áreas para exibição no menu (usando a projeção escolhida)
+        try:
+            gdf_calc = gdf.to_crs(epsg=epsg_escolhido)
+            areas = gdf_calc.area / 10000
+        except:
+            areas = [0] * len(gdf)
+
+        for i, row in gdf.iterrows():
+            nome_classe = "Desconhecido"
+            origem = row['origem_arquivo'] # Agora garantido que existe
+            area_val = areas.iloc[i] if i < len(areas) else 0
+            
+            if 'CLASSE' in gdf.columns:
+                cod_classe = row['CLASSE']
+                if pd.notnull(cod_classe):
+                    try:
+                        cod_int = int(cod_classe)
+                        desc = DICIONARIO_CLASSES_SIRIEMA.get(cod_int, f"Classe {cod_int}")
+                        nome_classe = f"[{cod_int}] {desc}"
+                        if cod_int == 101: indice_padrao_idx = i
+                    except: nome_classe = f"Classe: {cod_classe}"
                 else:
                     nome_classe = f"Arquivo: {origem}"
-
-                # Área aproximada (cálculo rápido sem reprojeção complexa para o menu)
-                label = f"ID {i}: {nome_classe}"
-                opcoes_poligonos[label] = i
-        
-        if not opcoes_poligonos:
-            st.error("Aguardando definição de projeção...")
-        else:
-            label_selecionado = st.selectbox(
-                "Escolha o polígono:", 
-                list(opcoes_poligonos.keys()),
-                index=indice_padrao_idx if indice_padrao_idx < len(opcoes_poligonos) else 0
-            )
-            idx_escolhido = opcoes_poligonos[label_selecionado]
+            else:
+                nome_classe = f"Arquivo: {origem}"
             
-            if st.button("✅ Confirmar e Analisar", type="primary"):
-                gdf_selecionado = gdf.iloc[[idx_escolhido]].copy()
-                dados_geo = processar_geometria_selecionada(gdf_selecionado, epsg_escolhido)
-                if dados_geo:
-                    st.session_state['dados_geo'] = dados_geo
-                    st.session_state['analise_confirmada'] = True
-                    st.rerun()
+            label = f"ID {i}: {nome_classe} ({area_val:.2f} ha)"
+            opcoes_poligonos[label] = i
+        
+        label_selecionado = st.selectbox(
+            "Escolha o polígono:", 
+            list(opcoes_poligonos.keys()),
+            index=indice_padrao_idx if indice_padrao_idx < len(opcoes_poligonos) else 0
+        )
+        idx_escolhido = opcoes_poligonos[label_selecionado]
+        
+        if st.button("✅ Confirmar e Analisar", type="primary"):
+            gdf_selecionado = gdf.iloc[[idx_escolhido]].copy()
+            dados_geo = processar_geometria_selecionada(gdf_selecionado, epsg_escolhido)
+            if dados_geo:
+                st.session_state['dados_geo'] = dados_geo
+                st.session_state['analise_confirmada'] = True
+                st.rerun()
 
     # --- TELA DE ANÁLISE ---
     if st.session_state.get('analise_confirmada') and 'dados_geo' in st.session_state:
