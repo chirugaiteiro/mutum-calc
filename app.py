@@ -129,9 +129,9 @@ def main():
                 name=label,
                 style_function=lambda x, color=color: {
                     'fillColor': color,
-                    'color': color, # Borda
-                    'weight': 2,
-                    'fillOpacity': 0.6
+                    'color': color,
+                    'weight': x['properties'].get('weight', 2),          # Lê do GeoDataFrame
+                    'fillOpacity': x['properties'].get('fillOpacity', 0.5), # Lê do GeoDataFrame
                 },
                 tooltip=folium.GeoJsonTooltip(
                     fields=['label_oficial', 'area_ha'],
