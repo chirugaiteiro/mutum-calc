@@ -5,8 +5,7 @@ import tempfile
 import os
 import shutil
 import fiona
-from shapely.geometry import box
-# Importa as configurações que acabamos de criar
+# Importa as configurações
 import config
 
 def save_and_extract(uploaded_file):
@@ -48,19 +47,32 @@ def enforce_crs(gdf):
     
     if gdf.crs is None:
         # Se não tiver CRS, assume SIRGAS 2000 (padrão Brasil) mas avisa
-        # Em um sistema real, idealmente perguntaríamos ao usuário, mas aqui assumimos o padrão.
         gdf.set_crs(target_crs, inplace=True)
     else:
         gdf = gdf.to_crs(target_crs)
     
     return gdf
 
-def identify_class(row, filename):
+def calculate_metrics(gdf):
     """
-    A MÁGICA: Tenta descobrir o que é a geometria baseada no config.py.
+    Calcula área em Hectares.
+    Para precisão, reprojeta temporariamente para UTM.
+    """
+    # Cria uma cópia reprojetada para UTM (métrica) apenas para calcular área
+    gdf_metric = gdf.to_crs(config.CRS_METRIC)
+    
+    # Cálculo: Área em m² / 10000 = Hectares
+    gdf['area_ha'] = gdf_metric.geometry.area / 10000
+    gdf['area_ha'] = gdf['area_ha'].round(4) # Arredonda para 4 casas (padrão cartório)
+    
+    return gdf
+
+def identify_class(row, filename, gdf_columns):
+    """
+    Tenta descobrir o que é a geometria baseada no config.py.
     Verifica tanto atributos (colunas) quanto o nome do arquivo de origem.
     """
-text_to_search = str(filename).lower()
+    text_to_search = str(filename).lower()
     
     # Normaliza o nome do arquivo (remove _ e - para facilitar match)
     text_to_search = text_to_search.replace("_", " ").replace("-", " ")
@@ -82,9 +94,14 @@ text_to_search = str(filename).lower()
             if keyword in text_to_search:
                 return class_key
     
-    return "DEFAULT"
+    return "DEFAULT" # Se não achar nada
 
 def process_file(uploaded_file):
+    """
+    Função Principal chamada pelo App.
+    Lê, padroniza, classifica e calcula.
+    Retorna um GeoDataFrame único consolidado.
+    """
     try:
         files = save_and_extract(uploaded_file)
         all_gdfs = []
@@ -92,57 +109,62 @@ def process_file(uploaded_file):
         for file_path in files:
             filename = os.path.basename(file_path)
             
-            # --- CORREÇÃO DE ENCODING ---
+            # --- CORREÇÃO DE ENCODING E LEITURA ---
             # Tenta ler com UTF-8, se falhar, tenta CP1252 (comum no Brasil/ArcGIS)
             try:
                 gdf = gpd.read_file(file_path, encoding='utf-8')
             except:
                 try:
                     gdf = gpd.read_file(file_path, encoding='cp1252')
-                except Exception as e:
-                    # Se falhar kml ou drivers exóticos
-                    if file_path.endswith('.kml'):
+                except Exception:
+                    # Se falhar kml ou drivers exóticos, tenta forçar driver KML
+                    if file_path.lower().endswith('.kml'):
                         fiona.drvsupport.supported_drivers['KML'] = 'rw'
-                        gdf = gpd.read_file(file_path, driver='KML')
+                        try:
+                            gdf = gpd.read_file(file_path, driver='KML')
+                        except:
+                            continue # Se falhar tudo, pula o arquivo
                     else:
                         continue # Pula arquivo corrompido
 
             # 1. Padronizar CRS
             gdf = enforce_crs(gdf)
             
-            # 2. Calcular Área
+            # 2. Calcular Área (Hectares)
+            # Filtra apenas Polígonos para cálculo de área
             if not gdf.empty and gdf.geom_type.isin(['Polygon', 'MultiPolygon']).any():
-                 gdf = calculate_metrics(gdf)
+                gdf = calculate_metrics(gdf)
             else:
-                 gdf['area_ha'] = 0.0
+                gdf['area_ha'] = 0.0
 
-            # 3. Classificação Automática (passando colunas agora)
+            # 3. Classificação Automática
+            # Aplica a função identify_class linha a linha
             gdf['internal_class'] = gdf.apply(lambda row: identify_class(row, filename, gdf.columns), axis=1)
             
-            # Mapeamento visual
+            # Adiciona metadados visuais baseados na classe identificada
             gdf['label_oficial'] = gdf['internal_class'].apply(
                 lambda k: config.CLASSES_MAPPING.get(k, config.CLASS_DEFAULT)['label']
             )
             gdf['color'] = gdf['internal_class'].apply(
                 lambda k: config.CLASSES_MAPPING.get(k, config.CLASS_DEFAULT)['color']
             )
-            
-            # --- CORREÇÃO VISUAL PARA PERÍMETRO ---
-            # Se for perimetro, zera o fillOpacity, senão usa padrão
+
+            # --- CORREÇÃO VISUAL PARA PERÍMETRO (Transparência) ---
             gdf['fillOpacity'] = gdf['internal_class'].apply(
                 lambda k: config.CLASSES_MAPPING.get(k, {}).get('fillOpacity', 0.6)
             )
             gdf['weight'] = gdf['internal_class'].apply(
                 lambda k: config.CLASSES_MAPPING.get(k, {}).get('weight', 1)
             )
-
+            
             all_gdfs.append(gdf)
 
         if not all_gdfs:
-            return None, "Nenhum dado válido encontrado."
+            return None, "Nenhum dado válido encontrado ou erro de leitura."
 
+        # Junta tudo num único GeoDataFrame
         final_gdf = pd.concat(all_gdfs, ignore_index=True)
         return final_gdf, None
 
     except Exception as e:
-        return None, str(e)
+        return None, f"Erro crítico no processamento: {str(e)}"
