@@ -60,82 +60,66 @@ def identify_class(row, filename):
     A MÁGICA: Tenta descobrir o que é a geometria baseada no config.py.
     Verifica tanto atributos (colunas) quanto o nome do arquivo de origem.
     """
-    # 1. Tenta identificar pelo nome do arquivo (ex: 'app.shp')
-    text_to_search = str(filename).lower()
+text_to_search = str(filename).lower()
     
-    # 2. Se houver coluna de texto relevante, adiciona à busca
-    # Procura colunas comuns como 'CLASSE', 'USO', 'TIPO', 'LAYER'
-    possible_cols = ['classe', 'uso', 'tipo', 'layer', 'name', 'nome']
-    cols_found = [c for c in gdf.columns if c.lower() in possible_cols]
+    # Normaliza o nome do arquivo (remove _ e - para facilitar match)
+    text_to_search = text_to_search.replace("_", " ").replace("-", " ")
+
+    # Tenta achar colunas descritivas na tabela de atributos
+    possible_cols = ['classe', 'uso', 'tipo', 'layer', 'legenda', 'tema']
+    # Interseção entre colunas existentes e possíveis
+    valid_cols = [c for c in gdf_columns if c.lower() in possible_cols]
     
-    if cols_found:
-        # Pega o valor da primeira coluna relevante encontrada
-        val = str(row[cols_found[0]]).lower()
+    if valid_cols:
+        # Pega o valor da primeira coluna encontrada
+        val = str(row[valid_cols[0]]).lower()
         text_to_search += " " + val
 
-    # 3. Compara com o dicionário do config.py
+    # Compara com o dicionário do config
     for class_key, rules in config.CLASSES_MAPPING.items():
         for keyword in rules['keywords']:
+            # Verifica se a keyword está no texto de busca
             if keyword in text_to_search:
-                return class_key # Retorna a chave (ex: 'NATIVA')
+                return class_key
     
-    return "DEFAULT" # Se não achar nada
-
-def calculate_metrics(gdf):
-    """
-    Calcula área em Hectares.
-    Para precisão, reprojeta temporariamente para UTM ou projeção de área igual.
-    """
-    # Cria uma cópia reprojetada para UTM (métrica) apenas para calcular área
-    # O EPSG 31981 é UTM 21S (comum em MS), mas para cobrir todo MS idealmente usaríamos Albers.
-    # Para simplicidade e rapidez, UTM 21S resolve 90% dos casos no MS.
-    gdf_metric = gdf.to_crs(config.CRS_METRIC)
-    
-    # Cálculo: Área em m² / 10000 = Hectares
-    gdf['area_ha'] = gdf_metric.geometry.area / 10000
-    gdf['area_ha'] = gdf['area_ha'].round(4) # Arredonda para 4 casas (padrão cartório)
-    
-    return gdf
+    return "DEFAULT"
 
 def process_file(uploaded_file):
-    """
-    Função Principal chamada pelo App.
-    Lê, padroniza, classifica e calcula.
-    Retorna um GeoDataFrame único consolidado.
-    """
     try:
         files = save_and_extract(uploaded_file)
         all_gdfs = []
 
         for file_path in files:
-            # Suporte especial para KML (drivers)
             filename = os.path.basename(file_path)
-            driver = 'KML' if filename.lower().endswith('.kml') else None
             
-            if driver == 'KML':
-                fiona.drvsupport.supported_drivers['KML'] = 'rw'
-            
+            # --- CORREÇÃO DE ENCODING ---
+            # Tenta ler com UTF-8, se falhar, tenta CP1252 (comum no Brasil/ArcGIS)
             try:
-                gdf = gpd.read_file(file_path, driver=driver)
-            except Exception as e:
-                # Se falhar um arquivo do zip, pula ele mas tenta os outros
-                continue
+                gdf = gpd.read_file(file_path, encoding='utf-8')
+            except:
+                try:
+                    gdf = gpd.read_file(file_path, encoding='cp1252')
+                except Exception as e:
+                    # Se falhar kml ou drivers exóticos
+                    if file_path.endswith('.kml'):
+                        fiona.drvsupport.supported_drivers['KML'] = 'rw'
+                        gdf = gpd.read_file(file_path, driver='KML')
+                    else:
+                        continue # Pula arquivo corrompido
 
             # 1. Padronizar CRS
             gdf = enforce_crs(gdf)
             
-            # 2. Calcular Área (Hectares)
-            # Filtra apenas Polígonos para cálculo de área
+            # 2. Calcular Área
             if not gdf.empty and gdf.geom_type.isin(['Polygon', 'MultiPolygon']).any():
                  gdf = calculate_metrics(gdf)
             else:
                  gdf['area_ha'] = 0.0
 
-            # 3. Classificação Automática
-            # Aplica a função identify_class linha a linha
-            gdf['internal_class'] = gdf.apply(lambda row: identify_class(row, filename), axis=1)
+            # 3. Classificação Automática (passando colunas agora)
+            gdf['internal_class'] = gdf.apply(lambda row: identify_class(row, filename, gdf.columns), axis=1)
             
-            # Adiciona metadados visuais baseados na classe identificada
+            # Mapeamento visual
             gdf['label_oficial'] = gdf['internal_class'].apply(
                 lambda k: config.CLASSES_MAPPING.get(k, config.CLASS_DEFAULT)['label']
             )
@@ -143,12 +127,20 @@ def process_file(uploaded_file):
                 lambda k: config.CLASSES_MAPPING.get(k, config.CLASS_DEFAULT)['color']
             )
             
+            # --- CORREÇÃO VISUAL PARA PERÍMETRO ---
+            # Se for perimetro, zera o fillOpacity, senão usa padrão
+            gdf['fillOpacity'] = gdf['internal_class'].apply(
+                lambda k: config.CLASSES_MAPPING.get(k, {}).get('fillOpacity', 0.6)
+            )
+            gdf['weight'] = gdf['internal_class'].apply(
+                lambda k: config.CLASSES_MAPPING.get(k, {}).get('weight', 1)
+            )
+
             all_gdfs.append(gdf)
 
         if not all_gdfs:
             return None, "Nenhum dado válido encontrado."
 
-        # Junta tudo num único GeoDataFrame
         final_gdf = pd.concat(all_gdfs, ignore_index=True)
         return final_gdf, None
 
