@@ -16,7 +16,7 @@ st.set_page_config(
     page_icon="🛰️"
 )
 
-# --- ESTILIZAÇÃO CSS (Visual Siriema/Imasul) ---
+# --- ESTILIZAÇÃO CSS ---
 st.markdown("""
     <style>
         .block-container {padding-top: 1rem;}
@@ -25,11 +25,22 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+def clean_gdf_for_map(gdf):
+    """
+    Remove ou converte colunas que quebram o Folium (ex: datas, objetos complexos).
+    """
+    gdf_clean = gdf.copy()
+    for col in gdf_clean.columns:
+        # Se for data, converte para string
+        if pd.api.types.is_datetime64_any_dtype(gdf_clean[col]):
+            gdf_clean[col] = gdf_clean[col].astype(str)
+    return gdf_clean
+
 def main():
     st.title(f"{config.APP_TITLE} - Validação de Imóvel")
     st.markdown("---")
 
-    # --- SEÇÃO 1: UPLOAD (O Input) ---
+    # --- SEÇÃO 1: UPLOAD ---
     col_up1, col_up2 = st.columns([1, 2])
     
     with col_up1:
@@ -38,15 +49,13 @@ def main():
             "Arraste seu ZIP, SHP, KML ou GeoJSON",
             type=["zip", "kml", "shp", "geojson", "gpkg"]
         )
-        
-        # Selectbox decorativo (pois o ingestor força SIRGAS, mas visualmente conforta o usuário)
-        st.selectbox("Projeção de Entrada (Detectada/Convertida)", ["SIRGAS 2000 (EPSG:4674) - Padrão"])
+        st.caption("O sistema detecta e converte automaticamente para SIRGAS 2000.")
 
     # --- PROCESSAMENTO ---
     if uploaded_file is not None:
-        # Usa session_state para não reprocessar toda hora que mexe no mapa
+        # Check de estado para evitar reprocessamento desnecessário
         if 'gdf_data' not in st.session_state or st.session_state.get('last_file') != uploaded_file.name:
-            with st.spinner("🛰️ Processando geometria e identificando classes..."):
+            with st.spinner("🛰️ Processando geometria, corrigindo topologia e identificando classes..."):
                 gdf, error = ingestor.process_file(uploaded_file)
                 
                 if error:
@@ -55,29 +64,29 @@ def main():
                 else:
                     st.session_state['gdf_data'] = gdf
                     st.session_state['last_file'] = uploaded_file.name
-                    st.toast("Arquivo processado com sucesso!", icon="✅")
+                    st.toast("Processamento concluído!", icon="✅")
 
-        # Recupera dados da memória
+        # Recupera dados
         gdf = st.session_state['gdf_data']
 
-        # --- SEÇÃO 2: TABELA RESUMO (Estilo Siriema) ---
+        # --- SEÇÃO 2: TABELA RESUMO ---
         st.subheader("📋 Áreas do Imóvel (Conferência)")
         
-        # Agrupa por Classe Oficial para somar as áreas
+        # Agrupa por Classe para somar
         resumo = gdf.groupby('label_oficial')['area_ha'].sum().reset_index()
         resumo = resumo.rename(columns={'label_oficial': 'Classe / Categoria', 'area_ha': 'Área Calculada (ha)'})
         
-        # Adiciona linha de total
+        # Totais
         total_area = resumo['Área Calculada (ha)'].sum()
         
-        # Mostra tabela bonitinha
+        # Exibe Tabela
         st.dataframe(
             resumo.style.format({"Área Calculada (ha)": "{:.4f}"}),
             use_container_width=True,
             hide_index=True
         )
         
-        # Métricas rápidas abaixo da tabela
+        # Métricas
         c1, c2, c3 = st.columns(3)
         c1.metric("Área Total Processada", f"{total_area:.4f} ha")
         c2.metric("Qtd. de Polígonos", len(gdf))
@@ -88,17 +97,20 @@ def main():
         # --- SEÇÃO 3: MAPA INTERATIVO ---
         st.subheader("🗺️ Visualização Espacial")
         
-        # Criação do Mapa Folium
-        # Centro inicial: pega o centroide da primeira geometria ou o padrão do config
+        # Prepara dados para o mapa (Limpeza de datas)
+        gdf_map = clean_gdf_for_map(gdf)
+
+        # Centro do Mapa
         try:
-            centroid = gdf.geometry.centroid.iloc[0]
+            # Tenta pegar o centroide da geometria 'PERIMETRO' se existir, senão pega do geral
+            centroid = gdf_map.geometry.centroid.iloc[0]
             start_loc = [centroid.y, centroid.x]
         except:
             start_loc = [config.MAP_CENTER_LAT, config.MAP_CENTER_LON]
 
-        m = folium.Map(location=start_loc, zoom_start=12, tiles=None) # Tiles=None para customizar
+        m = folium.Map(location=start_loc, zoom_start=12, tiles=None)
 
-        # Adiciona Imagem de Satélite (Esri World Imagery)
+        # Camadas Base
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
             attr='Esri',
@@ -107,7 +119,6 @@ def main():
             control=True
         ).add_to(m)
 
-        # Adiciona Mapa de Ruas (OpenStreetMap) como opção
         folium.TileLayer(
             tiles='OpenStreetMap',
             name='Mapa de Ruas',
@@ -115,23 +126,19 @@ def main():
             control=True
         ).add_to(m)
 
-        # Adiciona as camadas do GeoDataFrame
-        # Iteramos sobre as classes encontradas para criar camadas separadas (LayerControl)
-        for label in gdf['label_oficial'].unique():
-            # Filtra o gdf apenas para essa classe
-            subset = gdf[gdf['label_oficial'] == label]
-            
-            # Pega a cor dessa classe (baseado na primeira linha do subset)
-            color = subset.iloc[0]['color']
+        # Adiciona Polígonos
+        # Iteramos por LABEL para criar grupos no menu de camadas
+        for label in gdf_map['label_oficial'].unique():
+            subset = gdf_map[gdf_map['label_oficial'] == label]
             
             folium.GeoJson(
                 subset,
                 name=label,
-                style_function=lambda x, color=color: {
-                    'fillColor': color,
-                    'color': color,
-                    'weight': x['properties'].get('weight', 2),          # Lê do GeoDataFrame
-                    'fillOpacity': x['properties'].get('fillOpacity', 0.5), # Lê do GeoDataFrame
+                style_function=lambda feature: {
+                    'fillColor': feature['properties']['color'],     # Lê a cor definida no ingestor
+                    'color': feature['properties']['color'],         # Borda da mesma cor
+                    'weight': feature['properties'].get('weight', 2),# Espessura (borda grossa para perímetro)
+                    'fillOpacity': feature['properties'].get('fillOpacity', 0.5), # Transparência (0.0 para perímetro)
                 },
                 tooltip=folium.GeoJsonTooltip(
                     fields=['label_oficial', 'area_ha'],
@@ -140,11 +147,9 @@ def main():
                 )
             ).add_to(m)
 
-        # Adiciona controle de camadas (Checkboxes)
         folium.LayerControl(collapsed=False).add_to(m)
         Fullscreen().add_to(m)
 
-        # Renderiza no Streamlit
         st_folium(m, use_container_width=True, height=600)
 
 if __name__ == "__main__":
