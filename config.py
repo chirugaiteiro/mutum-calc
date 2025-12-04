@@ -29,13 +29,15 @@ MAP_ZOOM_START = 6
 # 'z_index': Ordem de plotagem (maior fica por cima).
 
 CLASSES_MAPPING = {
-    "PERIMETRO": {
-        "keywords": ["imovel", "area_total", "perimetro", "gleba", "matricula", "area_do_imovel"],
+"PERIMETRO": {
+        # Adicionei "carms" e códigos comuns do siriema nas keywords
+        "keywords": ["imovel", "area_total", "perimetro", "gleba", "matricula", "101-poligono"],
         "label": "Área Total do Imóvel",
-        "color": "#000000",      # Preto (Borda)
-        "fill_color": "#FFFFFF", # Transparente/Branco
-        "opacity": 0.1,
-        "style": "boundary",     # Marcador para plotar apenas contorno se necessário
+        "color": "#000000",      # Borda Preta
+        "fill_color": "#FFFFFF", # Cor irrelevante pois a opacidade será 0
+        "opacity": 1.0,          # Opacidade da BORDA
+        "fillOpacity": 0.0,      # <--- IMPORTANTE: Miolo 100% transparente
+        "weight": 3,             # Borda mais grossa para destacar
         "z_index": 1
     },
     "NATIVA": {
