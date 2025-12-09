@@ -6,10 +6,13 @@ Arquivo de configuração para o Módulo de Inventário e Fitossociologia (Mutum
 Contém listas oficiais, parâmetros de validação e dicionários de mapeamento.
 """
 
-# --- 1. LISTAS DE ESPÉCIES PROTEGIDAS E AMEAÇADAS ---
+# --- 1. LISTAS DE ESPÉCIES (URLs e Dicionários Fixos) ---
+
+# URL "Raw" do arquivo CSV no GitHub (Substitua pelo seu link real após o upload)
+URL_LISTA_MMA_CSV = "https://github.com/chirugaiteiro/bases_ambientais/raw/refs/heads/main/flora-ameacada-2021.csv"
 
 # Compensação Estadual (Resolução SEMADE n.9/2015 - Art. 52)
-# Fonte: Baseada no código original do casual_simples.py
+# Mantemos hardcoded pois é uma lista legal pequena e específica do MS
 LISTA_IMASUL_COMPENSACAO = {
     # Nomes Comuns
     "PEROBA ROSA": 10, "CEDRO": 10, "CEDRO ROSA": 10, "JEQUITIBA": 10, 
@@ -24,33 +27,17 @@ LISTA_IMASUL_COMPENSACAO = {
     "HANCORNIA SPECIOSA": 5, "EUGENIA DYSENTERICA": 5, "SYAGRUS OLERACEA": 5
 }
 
-# Lista Vermelha MMA (Portarias 443/2014, 444/2014 e atualizações)
-# Categorias: VU (Vulnerável), EN (Em Perigo), CR (Criticamente em Perigo)
-# Amostra focada em espécies arbóreas comuns no Centro-Oeste/MS
-LISTA_VERMELHA_MMA = {
-    "ARAUCARIA ANGUSTIFOLIA": "EN", # Pinheiro-do-paraná
-    "DICKSONIA SELLOWIANA": "EN",   # Xaxim
-    "AMBURANA CEARENSIS": "EN",     # Cerejeira / Cumaru-de-cheiro
-    "CEDRELA FISSILIS": "VU",       # Cedro
-    "BERTHOLLETIA EXCELSA": "VU",   # Castanheira
-    "SWIETENIA MACROPHYLLA": "VU",  # Mogno
-    "TABEBUIA CASSINOIDES": "EN",   # Caixeta
-    "OCOTEA POROSA": "VU",          # Imbuia
-    "DALBERGIA NIGRA": "VU",        # Jacarandá-da-bahia
-    "DIMORPHANDRA WILSONII": "CR"   # Faveiro-de-wilson
-}
-
-# --- 2. PARÂMETROS DE AUDITORIA BIOMÉTRICA (O "Guarda") ---
+# --- 2. PARÂMETROS DE AUDITORIA BIOMÉTRICA ---
 
 LIMITES_BIOMETRICOS = {
-    "DAP_MIN_CM": 3.0,     # Abaixo disso, suspeita de erro ou regeneração não recrutada
-    "DAP_MAX_CM": 250.0,   # Árvore monumental acima disso (checar digitação)
+    "DAP_MIN_CM": 3.0,     # Abaixo disso, suspeita de erro ou regeneração
+    "DAP_MAX_CM": 250.0,   # Árvore monumental (checar digitação)
     "ALTURA_MAX_M": 55.0,  # Árvore mais alta que prédio de 18 andares? Suspeito.
-    "FATOR_ESBELTEZ_MIN": 0.4, # H/DAP muito baixo (árvore "panqueca")
-    "FATOR_ESBELTEZ_MAX": 2.5  # H/DAP muito alto (árvore "agulha") - Ex: 20m de altura e 5cm de DAP
+    "FATOR_ESBELTEZ_MIN": 0.4, 
+    "FATOR_ESBELTEZ_MAX": 2.5  
 }
 
-# --- 3. MAPEAMENTO DE COLUNAS (Para aceitar variações do Excel) ---
+# --- 3. MAPEAMENTO DE COLUNAS ---
 
 SINONIMOS_COLUNAS = {
     "PARCELA": ["PARCELA", "TALHAO", "UNIDADE_AMOSTRAL", "P"],
