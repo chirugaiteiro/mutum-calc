@@ -16,4 +16,3 @@ streamlit-modal
 pyproj
 rtree
 urllib3
-scipy.stats
