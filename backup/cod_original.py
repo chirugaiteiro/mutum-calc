@@ -7,13 +7,24 @@ import streamlit.components.v1 as components
 
 # --- LISTA DE ESPÉCIES PROTEGIDAS (Resolução Semade n.9/2015, Art. 52) ---
 PROTECTED_SPECIES_MS = {
-    "Peroba Rosa": 10, "Aspidosperma polyneuron": 10, "Cedro": 10, "Cedrela fissilis": 10, 
-    "Cedro Rosa": 10, "Cedrela odorata": 10, "Jequitibá": 10, "Cariniana legalis": 10, 
-    "Itaúba": 10, "Mezilaurus itaúba": 10, "Baraúna": 10, "Schinopsis brasiliensis": 10, 
-    "Quebracho": 10, "Melanoxylon brauna": 10, "Aroeira do Sertão": 5, 
-    "Myracrodrun urundeuva": 5, "Gonçalo Alves": 5, "Astronium fraxinifolium": 5, 
-    "Pequi": 5, "Mangaba": 5, "Hancornia speciosa": 5, "Cagaita": 5, 
-    "Eugenia dysenterica Dc.": 5, "Guariroba": 5, "Syagrus oleracea": 5,
+# --- GRUPO FATOR 10 ---
+    "Peroba Rosa": 10, "Aspidosperma polyneuron": 10,
+    "Cedro": 10, "Cedrela fissilis": 10, "Cedrela brasiliensis": 10, # Sinônimo
+    "Cedro Rosa": 10, "Cedrela odorata": 10, "Cedrela mexicana": 10, # Sinônimo
+    "Jequitibá": 10, "Cariniana legalis": 10, "Cariniana brasiliensis": 10, # Sinônimo
+    "Itaúba": 10, "Mezilaurus itaúba": 10, "Mezilaurus itauba": 10, "Silvia itauba": 10, # Sinônimo
+    "Baraúna": 10, "Schinopsis brasiliensis": 10, "Schinopsis glabra": 10, # Sinônimo
+    "Quebracho": 10, "Melanoxylon brauna": 10, "Braúna": 10,
+    
+    # --- GRUPO FATOR 5 ---
+    "Aroeira do Sertão": 5, "Myracrodrun urundeuva": 5, "Astronium urundeuva": 5, # Sinônimo MUITO comum
+    "Aroeira": 5, "Astronium juglandifolium": 5, # Sinônimo
+    "Gonçalo Alves": 5, "Astronium fraxinifolium": 5, "Astronium graveolens": 5, # Confusão comum, melhor prevenir
+    "Pequi": 5, "Caryocar brasiliense": 5, "Caryocar coriaceum": 5,
+    "Mangaba": 5, "Hancornia speciosa": 5,
+    "Cagaita": 5, "Eugenia dysenterica": 5, "Eugenia dysenterica Dc.": 5, "Stenocalyx dysentericus": 5, # Sinônimo antigo
+    "Guariroba": 5, "Syagrus oleracea": 5, "Cocos oleracea": 5, # Sinônimo antigo
+    "Gueroba": 5,
 }
 
 # --- FUNÇÃO DE RESET (Limpa estado e redireciona) ---
