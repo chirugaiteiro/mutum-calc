@@ -1,4 +1,5 @@
 import streamlit as st
+import requests
 import pandas as pd
 import numpy as np
 from scipy.stats import t
@@ -28,6 +29,35 @@ PROTECTED_SPECIES_MS = {
     "Cagaita": 5, "Eugenia dysenterica Dc.": 5,
     "Guariroba": 5, "Syagrus oleracea": 5,
 }
+
+# --- NOVA FUNÇÃO: CONSULTA API FLORA DO BRASIL ---
+@st.cache_data(show_spinner=False) # Cache para não consultar a mesma espécie 2x
+def buscar_nome_aceito_jbrj(nome_cientifico):
+    """
+    Consulta a API do Jardim Botânico (Flora e Funga do Brasil).
+    Retorna o 'scientificName' aceito e correto.
+    """
+    url = "https://servicos.jbrj.gov.br/flora/api/v1/taxa"
+    params = {'nome': nome_cientifico}
+    
+    try:
+        response = requests.get(url, params=params, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if data['result']:
+                # Pega o primeiro resultado (o mais provável)
+                taxon = data['result'][0]
+                
+                # Se for sinônimo, buscamos o nome aceito
+                if taxon.get('taxonomicStatus') == 'NOME_ACEITO':
+                    return taxon.get('scientificName')
+                elif taxon.get('acceptedNameUsage'):
+                    # Retorna o nome aceito atrelado a este sinônimo
+                    return taxon.get('acceptedNameUsage').get('scientificName')
+                    
+        return nome_cientifico # Se der erro ou não achar, retorna o original
+    except:
+        return nome_cientifico # Fallback para funcionamento offline
 
 # --- FUNÇÃO INTELIGENTE DE BUSCA (PRIORIDADE: CIENTÍFICO) ---
 def get_compensation_factor(scientific_name, common_name):
@@ -298,6 +328,61 @@ with tab2:
                     top_sp = df_calc['Nome Comum'].mode()[0] if 'Nome Comum' in df_calc.columns and not df_calc['Nome Comum'].empty else "-"
                     top_fam = df_calc['Família'].mode()[0] if 'Família' in df_calc.columns and not df_calc['Família'].empty else "-"
 
+                    st.info("🌐 Conectando ao Flora e Funga do Brasil para verificar sinônimos...")
+            
+                    unique_species = df_calc['Nome Científico'].unique()
+                    mapa_sinonimos = {}
+                    
+                    # Barra de progresso para a consulta online (dá feedback visual ao usuário)
+                    progress_bar = st.progress(0)
+                    for i, sp in enumerate(unique_species):
+                        nome_limpo = str(sp).strip()
+                        if len(nome_limpo) > 3: # Ignora vazios
+                            nome_aceito = buscar_nome_aceito_jbrj(nome_limpo)
+                            # Só adiciona no mapa se o nome mudou
+                            if nome_aceito.lower() != nome_limpo.lower():
+                                mapa_sinonimos[nome_limpo] = nome_aceito
+                        progress_bar.progress((i + 1) / len(unique_species))
+                    
+                    progress_bar.empty()
+                    
+                    if mapa_sinonimos:
+                        st.toast(f"{len(mapa_sinonimos)} nomes científicos atualizados pela base oficial!", icon="🔄")
+                    
+                    # --- LOOP DE COMPENSAÇÃO ATUALIZADO ---
+                    for index, row in df_contagem_amostra.iterrows():
+                        nome_comum = str(row['Nome Comum']).strip()
+                        nome_cientifico_original = str(row['Nome Científico']).strip()
+                        n_amostra = row['N_Amostra']
+                        
+                        # 1. Tenta o nome original
+                        nome_para_verificar = nome_cientifico_original
+                        
+                        # 2. Se descobrimos que é um sinônimo, usamos o nome aceito oficial
+                        if nome_cientifico_original in mapa_sinonimos:
+                            nome_para_verificar = mapa_sinonimos[nome_cientifico_original]
+                        
+                        # 3. Busca o fator usando a função inteligente (agora com o nome atualizado)
+                        compensacao_fator = get_compensation_factor(nome_para_verificar, nome_comum)
+                        
+                        if compensacao_fator > 0:
+                            N_Estimado = n_amostra * Fator_Extrapolacao_pop
+                            Mudas_Compensacao = np.ceil(N_Estimado) * compensacao_fator
+                            
+                            # Adiciona observação se houve correção de nome
+                            obs = ""
+                            if nome_cientifico_original != nome_para_verificar:
+                                obs = f"(Sinônimo de {nome_para_verificar})"
+                            
+                            compensacao_list.append({
+                                "Espécie": nome_comum, 
+                                "Nome Científico": f"{nome_cientifico_original} {obs}", 
+                                "N_Amostra": n_amostra,
+                                "Fator_Compensacao": compensacao_fator, 
+                                "N_Estimado": N_Estimado, 
+                                "Mudas_Compensacao": Mudas_Compensacao
+                            })
+                    
                     df_contagem_amostra = df_calc.groupby(['Nome Comum', 'Nome Científico']).size().reset_index(name='N_Amostra')
                     compensacao_list = []
                     Fator_Extrapolacao_pop = area_total_ha / Area_Amostrada_ha if Area_Amostrada_ha > 0 else 0
