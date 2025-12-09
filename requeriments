@@ -1,10 +1,6 @@
 streamlit
-geopandas
-requests
-shapely
-folium
-streamlit-folium
-matplotlib
-Pillow
-cipy.stats
 pandas
+numpy
+scipy.stats
+io
+streamlit.components.v1
