@@ -1,5 +1,12 @@
 streamlit
+geopandas
+requests
+shapely
+folium
+streamlit-folium
+matplotlib
+Pillow
+scipy
 pandas
 numpy
-scipy
 openpyxl
