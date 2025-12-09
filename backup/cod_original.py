@@ -5,16 +5,53 @@ from scipy.stats import t
 import io
 import streamlit.components.v1 as components
 
+# ==============================================================================
+# 1. CONFIGURAÇÕES E CONSTANTES
+# ==============================================================================
+
 # --- LISTA DE ESPÉCIES PROTEGIDAS (Resolução Semade n.9/2015, Art. 52) ---
+# A busca agora é "Case Insensitive" (não importa maiúscula/minúscula)
 PROTECTED_SPECIES_MS = {
-    "Peroba Rosa": 10, "Aspidosperma polyneuron": 10, "Cedro": 10, "Cedrela fissilis": 10, 
-    "Cedro Rosa": 10, "Cedrela odorata": 10, "Jequitibá": 10, "Cariniana legalis": 10, 
-    "Itaúba": 10, "Mezilaurus itaúba": 10, "Baraúna": 10, "Schinopsis brasiliensis": 10, 
-    "Quebracho": 10, "Melanoxylon brauna": 10, "Aroeira do Sertão": 5, 
-    "Myracrodrun urundeuva": 5, "Gonçalo Alves": 5, "Astronium fraxinifolium": 5, 
-    "Pequi": 5, "Mangaba": 5, "Hancornia speciosa": 5, "Cagaita": 5, 
-    "Eugenia dysenterica Dc.": 5, "Guariroba": 5, "Syagrus oleracea": 5,
+    # Espécies com fator 10
+    "Peroba Rosa": 10, "Aspidosperma polyneuron": 10,
+    "Cedro": 10, "Cedrela fissilis": 10,
+    "Cedro Rosa": 10, "Cedrela odorata": 10,
+    "Jequitibá": 10, "Cariniana legalis": 10,
+    "Itaúba": 10, "Mezilaurus itaúba": 10,
+    "Baraúna": 10, "Schinopsis brasiliensis": 10,
+    "Quebracho": 10, "Melanoxylon brauna": 10,
+    # Espécies com fator 5
+    "Aroeira do Sertão": 5, "Myracrodrun urundeuva": 5,
+    "Gonçalo Alves": 5, "Astronium fraxinifolium": 5,
+    "Pequi": 5, "Caryocar brasiliense": 5,
+    "Mangaba": 5, "Hancornia speciosa": 5,
+    "Cagaita": 5, "Eugenia dysenterica Dc.": 5,
+    "Guariroba": 5, "Syagrus oleracea": 5,
 }
+
+# --- FUNÇÃO INTELIGENTE DE BUSCA (PRIORIDADE: CIENTÍFICO) ---
+def get_compensation_factor(scientific_name, common_name):
+    """
+    Busca o fator de compensação normalizando strings.
+    Prioridade: 1. Nome Científico -> 2. Nome Popular
+    """
+    # 1. Normaliza inputs (remove espaços e converte para minúsculas)
+    sc_name_norm = str(scientific_name).strip().lower()
+    cm_name_norm = str(common_name).strip().lower()
+
+    # 2. Cria versão normalizada do dicionário de referência
+    # (Chave em minúsculo: Valor original)
+    protected_keys_norm = {k.strip().lower(): v for k, v in PROTECTED_SPECIES_MS.items()}
+    
+    # 3. Tenta encontrar pelo Nome Científico (Prioridade Máxima)
+    if sc_name_norm in protected_keys_norm:
+        return protected_keys_norm[sc_name_norm]
+
+    # 4. Se falhar, tenta pelo Nome Popular (Fallback)
+    if cm_name_norm in protected_keys_norm:
+        return protected_keys_norm[cm_name_norm]
+    
+    return 0
 
 # --- FUNÇÃO DE RESET (Limpa estado e redireciona) ---
 def reset_app_state():
@@ -30,15 +67,14 @@ def reset_app_state():
         height=0, width=0
     )
 
-
-# --- Configuração da Página ---
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="M.U.T.U.M. - Inventário Florestal",
     page_icon="🌳",
     layout="wide"
 )
 
-# --- CSS VISUAL (Mantido) ---
+# --- CSS VISUAL ---
 st.markdown("""
 <style>
     .dataframe { color: #ffffff !important; background-color: #1a1c24 !important; }
@@ -49,6 +85,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ==============================================================================
+# 2. INTERFACE PRINCIPAL
+# ==============================================================================
 
 st.title("🌳 M.U.T.U.M.")
 st.markdown("##### Sistema de Análise de Inventário Florestal (Padrão IMASUL)")
@@ -65,8 +104,7 @@ tab1, tab2, tab3 = st.tabs(["📂 1. Dados & Importação", "⚙️ 2. Configura
 with tab1:
     st.header("Importação do Levantamento de Campo")
     
-    # --- NOVO AVISO DE VERSÃO BETA ---
-    st.warning("🚧 **AVISO:** Esta ferramenta está na **Versão Beta 0.5** e deve ser usada apenas para testes e verificação. A responsabilidade técnica é do engenheiro florestal responsável.")
+    st.warning("🚧 **AVISO:** Esta ferramenta está na **Versão Beta 0.6** e deve ser usada apenas para testes e verificação. A responsabilidade técnica é do engenheiro florestal responsável.")
     st.markdown("---")
 
     col_up_left, col_up_right = st.columns([1, 2])
@@ -141,7 +179,7 @@ with tab1:
                 st.success("✅ Importação realizada com sucesso!")
                 st.markdown("---")
 
-                # Dashboard (Mantido)
+                # Dashboard
                 qtd_parcelas = df_proc['Parcela'].nunique()
                 qtd_arvores = len(df_proc)
                 n_especies = df_proc['Nome Comum'].nunique() if 'Nome Comum' in df_proc.columns else 0
@@ -206,7 +244,7 @@ with tab2:
             try:
                 df_calc = st.session_state.df_final.copy()
                 
-                # CÁLCULO DE VOLUME INDIVIDUAL
+                # --- CÁLCULO DE VOLUME INDIVIDUAL ---
                 if tipo_calculo == "Fator de Forma (f)":
                     df_calc['Vol_Ind'] = (np.pi * (df_calc['DAP']**2) / 40000) * df_calc[tipo_altura_calc] * ff_input
                 else:
@@ -214,7 +252,7 @@ with tab2:
                     eq_proc = eq_proc.replace("DAP", "df_calc['DAP']").replace("CAP", "df_calc['CAP']").replace("PI", "np.pi")
                     df_calc['Vol_Ind'] = eval(eq_proc)
 
-                # Estatística e Extrapolação
+                # --- ESTATÍSTICA ---
                 df_parcelas = df_calc.groupby('Parcela')['Vol_Ind'].sum().reset_index()
                 fator_extrapolacao_ha = 10000 / area_parcela_m2
                 df_parcelas['Vol_ha'] = df_parcelas['Vol_Ind'] * fator_extrapolacao_ha
@@ -228,9 +266,8 @@ with tab2:
                     N = (area_total_ha * 10000) / area_parcela_m2
                     media = df_parcelas['Vol_ha'].mean()
                     
-                    # --- GUARDA DE ESTABILIDADE CRÍTICA ---
                     if media <= 0 or np.isnan(media) or df_parcelas.empty or df_parcelas['Vol_ha'].isnull().all():
-                         raise ValueError("Média de volume (m³/ha) inválida. Verifique se as colunas de Altura e DAP estão preenchidas corretamente (volume > 0).")
+                         raise ValueError("Média de volume inválida.")
                         
                     variancia = df_parcelas['Vol_ha'].var(ddof=1)
                     desvio = np.sqrt(variancia)
@@ -248,13 +285,12 @@ with tab2:
                     ic_inf = media - ea
                     ic_sup = media + ea
                     
-                    # Totais
                     total_vol = media * area_total_ha
                     total_ea = ea * area_total_ha
                     total_ic_inf = ic_inf * area_total_ha
                     total_ic_sup = ic_sup * area_total_ha
 
-                    # Florística e Compensação
+                    # --- FLORÍSTICA E COMPENSAÇÃO (LÓGICA CORRIGIDA) ---
                     df_calc['Nome Comum'] = df_calc['Nome Comum'].astype(str)
                     df_calc['Nome Científico'] = df_calc['Nome Científico'].astype(str)
                     df_calc['Família'] = df_calc['Família'].astype(str)
@@ -271,7 +307,10 @@ with tab2:
                         nome_cientifico = str(row['Nome Científico']).strip()
                         n_amostra = row['N_Amostra']
                         
-                        compensacao_fator = PROTECTED_SPECIES_MS.get(nome_cientifico, PROTECTED_SPECIES_MS.get(nome_comum, 0))
+                        # USO DA NOVA FUNÇÃO INTELIGENTE:
+                        # 1. Tenta Nome Científico (Caryocar brasiliense)
+                        # 2. Se falhar, tenta Nome Popular (Pequi, Piqui, etc)
+                        compensacao_fator = get_compensation_factor(nome_cientifico, nome_comum)
                             
                         if compensacao_fator > 0:
                             N_Estimado = n_amostra * Fator_Extrapolacao_pop
@@ -282,7 +321,7 @@ with tab2:
                                 "Fator_Compensacao": compensacao_fator, "N_Estimado": N_Estimado, "Mudas_Compensacao": Mudas_Compensacao
                             })
 
-                    # Salvar
+                    # Salvar Resultados
                     st.session_state.resultados = {
                         "stats": {
                             "media": media, "var": variancia, "dp": desvio, "cv": cv, "var_media": var_media,
@@ -295,8 +334,6 @@ with tab2:
                     }
                     
                     st.toast("Cálculo realizado! Redirecionando...", icon="✅")
-                    
-                    # AUTO-NAVEGAÇÃO
                     components.html("""<script> const tabs = window.parent.document.querySelectorAll('button[data-baseweb="tab"]'); if (tabs.length >= 3) { tabs[2].click(); } </script>""", height=0, width=0)
 
             except ValueError as ve:
