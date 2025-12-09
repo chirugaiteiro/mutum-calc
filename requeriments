@@ -1,0 +1,10 @@
+streamlit
+geopandas
+requests
+shapely
+folium
+streamlit-folium
+matplotlib
+Pillow
+cipy.stats
+pandas
