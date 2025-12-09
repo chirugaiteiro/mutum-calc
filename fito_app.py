@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 
 # --- IMPORTAÇÃO DOS MÓDULOS INTERNOS ---
 try:
+    # Tenta importar os módulos que criamos
     from fito_config import LISTA_IMASUL_COMPENSACAO
     from fito_utils import padronizar_colunas, auditoria_dados
     from fito_core import CalculadoraInventario, CalculadoraFitosso
@@ -17,15 +18,16 @@ except ImportError as e:
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="M.U.T.U.M. - Fitossociologia & Inventário", 
-    page_icon="🐦", 
+    page_icon="🌿", 
     layout="wide"
 )
 
-# Estilização para impressão e alertas
+# Estilização (CSS) para impressão e alertas visuais
 st.markdown("""
 <style>
     .stAlert { padding: 0.5rem; border-radius: 5px; }
     .metric-card { background-color: #f0f2f6; padding: 15px; border-radius: 10px; text-align: center; }
+    /* Oculta sidebar na impressão */
     @media print {
         [data-testid="stSidebar"], .stButton, .stFileUploader { display: none !important; }
         .block-container { padding-top: 1rem !important; }
@@ -47,6 +49,8 @@ with st.sidebar:
     st.divider()
     st.header("2. Arquivo")
     uploaded_file = st.file_uploader("Upload Planilha de Campo (.xlsx, .csv)", type=["xlsx", "csv"])
+    
+    st.caption("Certifique-se que sua planilha tenha as colunas: Parcela, DAP, Altura e Nome Científico.")
 
 # --- ESTADO DA SESSÃO ---
 if 'df_raw' not in st.session_state: st.session_state.df_raw = None
@@ -55,14 +59,21 @@ if 'df_raw' not in st.session_state: st.session_state.df_raw = None
 if uploaded_file:
     try:
         if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file, sep=None, engine='python')
+            # Tenta ler CSV (detectando separador automaticamente se possível, ou usando ;)
+            try:
+                df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8')
+                if len(df.columns) < 2: # Se falhar, tenta vírgula
+                     uploaded_file.seek(0)
+                     df = pd.read_csv(uploaded_file, sep=',')
+            except:
+                df = pd.read_csv(uploaded_file, sep=None, engine='python')
         else:
             df = pd.read_excel(uploaded_file)
         
-        # Padroniza nomes de colunas (DAP, ALTURA, PARCELA, etc.)
+        # Padroniza nomes de colunas (DAP, ALTURA, PARCELA, etc.) usando nosso utils
         df_padrao = padronizar_colunas(df)
         st.session_state.df_raw = df_padrao
-        st.sidebar.success(f"✅ Arquivo processado: {len(df)} árvores.")
+        st.sidebar.success(f"✅ Arquivo processado: {len(df)} árvores identificadas.")
     except Exception as e:
         st.error(f"Erro crítico ao ler arquivo: {e}")
 
@@ -70,13 +81,13 @@ if uploaded_file:
 if st.session_state.df_raw is not None:
     df = st.session_state.df_raw
     
-    # Verificação mínima de colunas
+    # Verificação mínima de colunas para não quebrar o código
     required = ['PARCELA', 'DAP']
     missing = [c for c in required if c not in df.columns]
     
     if missing:
         st.error(f"❌ Colunas obrigatórias faltando: {', '.join(missing)}")
-        st.warning("O sistema espera colunas como: 'Parcela', 'DAP', 'Altura', 'Nome Científico'.")
+        st.warning("O sistema espera colunas como: 'Parcela', 'DAP', 'Altura', 'Nome Científico'. Verifique o cabeçalho do seu Excel.")
     else:
         # TABS DE NAVEGAÇÃO
         tab_audit, tab_inv, tab_fito = st.tabs([
@@ -93,27 +104,29 @@ if st.session_state.df_raw is not None:
             
             c1, c2 = st.columns(2)
             
-            # 1.1 Relatório de Erros (Utils)
+            # 1.1 Relatório de Erros (usa fito_utils.auditoria_dados)
             with c1:
                 st.markdown("##### 🚨 Alertas Biométricos e Espécies Ameaçadas")
                 with st.spinner("Cruzando dados com Lista Vermelha MMA..."):
+                    # Aqui a mágica acontece: ele cruza com o CSV do MMA
                     df_log = auditoria_dados(df)
                 
                 if not df_log.empty:
-                    # Filtros de gravidade
+                    # Filtros de gravidade para exibir mensagens
                     criticos = df_log[df_log['Tipo'].str.contains("CRÍTICO|Ameaçada")]
                     erros = df_log[df_log['Tipo'].str.contains("Erro")]
                     alertas = df_log[df_log['Tipo'].str.contains("Alerta")]
                     
                     if not criticos.empty:
-                        st.error(f"⛔ **BLOQUEANTE:** Encontradas {len(criticos)} ocorrências de Espécies Ameaçadas ou Erros Críticos.")
+                        st.error(f"⛔ **BLOQUEANTE:** Encontradas {len(criticos)} espécies Ameaçadas ou Erros Críticos.")
                     elif not erros.empty:
-                        st.warning(f"⚠️ **ATENÇÃO:** Encontrados {len(erros)} erros de consistência.")
+                        st.warning(f"⚠️ **ATENÇÃO:** Encontrados {len(erros)} erros de consistência (ex: árvore 'panqueca').")
                     else:
                         st.info(f"ℹ️ Encontrados {len(alertas)} alertas de verificação.")
                     
+                    # Exibe tabela colorida
                     st.dataframe(
-                        df_log.style.applymap(
+                        df_log.style.map(
                             lambda x: 'color: red; font-weight: bold' if "CRÍTICO" in str(x) else ('color: orange' if "Alerta" in str(x) else ''), 
                             subset=['Tipo']
                         ), use_container_width=True, height=350
@@ -124,10 +137,11 @@ if st.session_state.df_raw is not None:
             # 1.2 Lei de Benford (Fraude Numérica)
             with c2:
                 st.markdown("##### 📉 Teste da Lei de Benford (1º Dígito do DAP)")
+                st.caption("Verifica se os dados de DAP seguem um padrão natural ou se foram 'inventados'.")
                 try:
                     daps = df['DAP'].dropna()
                     daps = daps[daps > 0]
-                    # Pega o primeiro dígito significativo
+                    # Pega o primeiro dígito significativo (1-9)
                     first_digits = daps.astype(str).str.lstrip('0.').str[0].astype(int)
                     counts = first_digits.value_counts(normalize=True).sort_index()
                     
@@ -141,7 +155,11 @@ if st.session_state.df_raw is not None:
                     
                     fig_ben.update_layout(xaxis_title="Dígito (1-9)", yaxis_title="Frequência", height=350, margin=dict(l=20, r=20, t=30, b=20))
                     st.plotly_chart(fig_ben, use_container_width=True)
-                    st.caption("ℹ️ Se as barras azuis forem muito diferentes da linha vermelha, há indício de manipulação dos dados.")
+                    
+                    # Interpretação básica para o usuário
+                    diff_1 = abs(counts.get(1, 0) - benford_probs[0])
+                    if diff_1 > 0.15: # 15% de diferença no dígito 1 é suspeito
+                         st.error("⚠️ **Alerta de Fraude:** A distribuição dos dados desvia significativamente do padrão natural (Lei de Benford).")
                 except:
                     st.warning("Dados insuficientes para teste de Benford.")
 
@@ -182,6 +200,7 @@ if st.session_state.df_raw is not None:
 
             if btn_calc:
                 with st.spinner("Processando estatística inferencial..."):
+                    # Chama o cálculo no fito_core.py
                     df_vol = CalculadoraInventario.calcular_volume(df, metodo, area_parc, ff, eq_user)
                     res, err = CalculadoraInventario.estatistica_acs(df_vol, area_tot, area_parc)
                 
@@ -215,18 +234,19 @@ if st.session_state.df_raw is not None:
             st.caption("Análise estrutural para validar a tipologia declarada (Áreas de Encrave).")
             
             if 'NOME_CIENTIFICO' not in df.columns:
-                st.warning("⚠️ Coluna 'NOME_CIENTIFICO' não encontrada. O sistema tentará usar 'NOME_COMUM' ou 'Indeterminado'.")
+                st.warning("⚠️ Coluna 'NOME_CIENTIFICO' não encontrada. O sistema tentará usar 'NOME_COMUM'.")
             
+            # Processamento Fitossociológico no fito_core.py
             tabela_ivi, indices = CalculadoraFitosso.processar(df, area_parc)
             
             # 3.1 Índices Ecológicos (Cards)
             col_i1, col_i2, col_i3, col_i4 = st.columns(4)
-            col_i1.metric("Shannon (H')", f"{indices['H\' (Shannon)']:.2f}", help="Diversidade. Cerradão conservado > 2.5")
+            col_i1.metric("Shannon (H')", f"{indices['H\' (Shannon)']:.2f}", help="Diversidade. Cerradão conservado geralmente > 2.0")
             col_i2.metric("Pielou (J')", f"{indices['J\' (Pielou)']:.2f}", help="Equabilidade (0-1). Próximo a 1 indica distribuição uniforme.")
             col_i3.metric("Riqueza (S)", f"{indices['Riqueza (S)']}", help="Número de espécies encontradas.")
             col_i4.metric("Área Basal (G)", f"{indices['Area Basal Total (G)']:.2f} m²/ha", help="Ocupação do solo.")
             
-            # Validação Simples de Tipologia
+            # Validação Simples de Tipologia (Regras de Bolso)
             if tipologia == "Savana Arbórea Aberta (Cerradão)":
                 if indices['H\' (Shannon)'] < 2.0:
                     st.warning(f"⚠️ **Alerta de Tipologia:** Índice de Shannon ({indices['H\' (Shannon)']:.2f}) baixo para um Cerradão típico. Pode indicar antropização ou transição.")
@@ -237,6 +257,7 @@ if st.session_state.df_raw is not None:
             
             # 3.2 Tabela IVI (Heatmap)
             st.markdown("##### 🏆 Tabela Fitossociológica (Top Espécies por IVI)")
+            # Exibe com gradiente de cor no IVI para destacar as dominantes
             st.dataframe(
                 tabela_ivi.style.format({
                     "DA": "{:.1f}", "DR": "{:.2f}%",
@@ -250,10 +271,11 @@ if st.session_state.df_raw is not None:
             # 3.3 Gráficos
             g1, g2 = st.columns(2)
             with g1:
-                # Pareto IVI
-                top10 = tabela_ivi.head(10)
-                fig_ivi = px.bar(top10, x='IVI', y='NOME_CIENTIFICO', orientation='h', title="Top 10 Espécies (IVI)", color='IVI')
-                fig_ivi.update_layout(yaxis=dict(autorange="reversed")) # Maior em cima
+                # Gráfico de Pareto (IVI)
+                top15 = tabela_ivi.head(15)
+                # Ordena para o gráfico ficar bonito (maior em cima)
+                top15 = top15.sort_values('IVI', ascending=True) 
+                fig_ivi = px.bar(top15, x='IVI', y='NOME_CIENTIFICO', orientation='h', title="Top 15 Espécies (IVI)", color='IVI')
                 st.plotly_chart(fig_ivi, use_container_width=True)
             
             with g2:
@@ -263,13 +285,20 @@ if st.session_state.df_raw is not None:
                     # Cria classes de diâmetro (5 em 5 cm)
                     bins = np.arange(0, df['DAP'].max() + 5, 5)
                     labels = [f"{int(b)}-{int(b+5)}" for b in bins[:-1]]
-                    df['Classe_DAP'] = pd.cut(df['DAP'], bins=bins, labels=labels, right=False)
-                    contagem_classes = df['Classe_DAP'].value_counts().sort_index()
+                    # Cria coluna temporária para o gráfico
+                    df_graf = df.copy()
+                    df_graf['Classe_DAP'] = pd.cut(df_graf['DAP'], bins=bins, labels=labels, right=False)
+                    contagem_classes = df_graf['Classe_DAP'].value_counts().sort_index()
                     
                     fig_jota = px.bar(x=contagem_classes.index.astype(str), y=contagem_classes.values, 
-                                      title="Distribuição de Diâmetros (Tendência Esperada: Decrescente)")
+                                      title="Distribuição de Diâmetros (Esperado: Decrescente)")
                     fig_jota.update_xaxes(title="Classe de DAP (cm)")
                     fig_jota.update_yaxes(title="Nº Indivíduos")
                     st.plotly_chart(fig_jota, use_container_width=True)
-                except:
-                    st.warning("Erro ao gerar gráfico diamétrico.")
+                    
+                    # Verificação rápida do "Jota"
+                    if len(contagem_classes) > 2:
+                        if contagem_classes.iloc[0] < contagem_classes.iloc[1]:
+                             st.info("ℹ️ A distribuição não apresenta o formato clássico de 'Jota Invertido' perfeito (falta de regeneração nas classes iniciais?).")
+                except Exception as e:
+                    st.warning(f"Não foi possível gerar gráfico diamétrico: {e}")
