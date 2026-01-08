@@ -346,19 +346,22 @@ with tab3:
         st.markdown("---")
 
         # --- DENTRO DA ABA 3 (Substituindo o bloco de compensação antigo) ---
-
+        
         st.markdown("## 🌳 Validação de Compensação (Res. Semade n.9/2015)")
         
-        # 1. Preparação dos dados
+        # 1. Preparação dos dados com a nova coluna ID
         df_amostra = st.session_state.df_final
         res_stats = st.session_state.resultados["stats"]
         fator_extrapolacao = res_stats["area_total"] / res_stats["area_amostrada"] if res_stats["area_amostrada"] > 0 else 0
         
-        # Agrupar todas as espécies
+        # Agrupar espécies
         df_todas_sp = df_amostra.groupby(['Nome Comum', 'Nome Científico']).size().reset_index(name='N_Amostra')
         df_todas_sp['N_Populacao'] = (df_todas_sp['N_Amostra'] * fator_extrapolacao)
         
-        # Identificação automática inicial
+        # Inserção da Coluna ID (Iniciando em 1)
+        df_todas_sp.insert(0, 'ID', range(1, len(df_todas_sp) + 1))
+        
+        # Identificação automática inicial do fator
         def buscar_fator(row):
             nc = str(row['Nome Científico']).strip()
             np = str(row['Nome Comum']).strip()
@@ -366,45 +369,45 @@ with tab3:
         
         df_todas_sp['Fator (x)'] = df_todas_sp.apply(buscar_fator, axis=1)
         
-        # Interface de Alerta
-        if (df_todas_sp['Fator (x)'] > 0).any():
-            st.warning("⚠️ **ESPÉCIES PROTEGIDAS DETECTADAS:** Valide os valores na tabela abaixo e ajuste o Fator (x) se houver erros de digitação nos nomes.")
-        else:
-            st.info("💡 **VERIFICAÇÃO:** Nenhuma espécie protegida foi identificada automaticamente. Revise a lista abaixo para garantir que nenhum nome com erro de digitação passou despercebido.")
+        # 2. Lógica de Pintura (Highlight)
+        def highlight_protected(row):
+            # Se o fator for maior que 0, pinta a linha de amarelo suave (estilo técnico)
+            return ['background-color: #f1c40f; color: black' if row['Fator (x)'] > 0 else '' for _ in row]
         
-        # 2. TABELA COM AJUSTE AUTOMÁTICO E COLUNA DE MUDAS
-        # O data_editor permite que o usuário altere o fator e veja o resultado na hora
-        df_editavel = st.data_editor(
+        # 3. Interface de Edição
+        # Nota: st.data_editor ainda não suporta .style diretamente para edição em tempo real de cores, 
+        # então usaremos uma abordagem de duas etapas: Edição -> Visualização Colorida.
+        
+        st.info("💡 **Ajuste os Fatores:** Altere os valores abaixo. As linhas identificadas pelo sistema já iniciam com o fator sugerido.")
+        
+        df_editado = st.data_editor(
             df_todas_sp,
             column_config={
-                "Nome Comum": st.column_config.TextColumn("Nome Popular", width="medium"),
-                "Nome Científico": st.column_config.TextColumn("Nome Científico", width="large"),
-                "N_Amostra": st.column_config.NumberColumn("N° Amostrado", format="%d"),
+                "ID": st.column_config.NumberColumn("ID", width="small"),
+                "Nome Comum": "Nome Popular",
+                "N_Amostra": "N° Amostrado",
                 "N_Populacao": st.column_config.NumberColumn("N° População", format="%.2f"),
-                "Fator (x)": st.column_config.SelectboxColumn(
-                    "Fator (x)",
-                    options=[0, 5, 10],
-                    help="Selecione o fator de compensação conforme a Resolução."
-                )
+                "Fator (x)": st.column_config.SelectboxColumn("Fator (x)", options=[0, 5, 10])
             },
-            disabled=["Nome Comum", "Nome Científico", "N_Amostra", "N_Populacao"],
-            hide_index=True,
-            use_container_width=True, # Ajuste automático de largura
-            num_rows="dynamic"        # Evita barras de rolagem desnecessárias se a lista for pequena
-        )
-        
-        # 3. CÁLCULO DAS MUDAS POR ESPÉCIE E TOTAL
-        df_editavel['Mudas por Espécie'] = (np.ceil(df_editavel['N_Populacao']) * df_editavel['Fator (x)']).astype(int)
-        
-        # Exibição da coluna de mudas calculada na hora (logo abaixo ou via nova tabela)
-        st.markdown("##### 📊 Resumo de Mudas por Espécie")
-        st.dataframe(
-            df_editavel[df_editavel['Fator (x)'] > 0][['Nome Comum', 'Fator (x)', 'Mudas por Espécie']],
+            disabled=["ID", "Nome Comum", "Nome Científico", "N_Amostra", "N_Populacao"],
             hide_index=True,
             use_container_width=True
         )
         
-        total_geral = df_editavel['Mudas por Espécie'].sum()
+        # Cálculo das Mudas
+        df_editado['Mudas Exigidas'] = (np.ceil(df_editado['N_Populacao']) * df_editado['Fator (x)']).astype(int)
+        
+        # 4. Exibição da Tabela "Pintada" (Visualização Final)
+        st.markdown("##### 📝 Conferência Final e Destaque")
+        
+        # Aplicando a cor nas linhas com fator > 0
+        st.dataframe(
+            df_editado.style.apply(highlight_protected, axis=1),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        total_geral = df_editado['Mudas Exigidas'].sum()
         
         st.markdown("---")
         if total_geral > 0:
