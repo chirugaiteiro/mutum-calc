@@ -346,78 +346,75 @@ with tab3:
         st.markdown("---")
 
         # --- DENTRO DA ABA 3 (Substituindo o bloco de compensação antigo) ---
-        
+
         st.markdown("## 🌳 Validação de Compensação (Res. Semade n.9/2015)")
         
-        # 1. Preparação dos dados com a nova coluna ID
+        # 1. Preparação dos dados consolidados
         df_amostra = st.session_state.df_final
         res_stats = st.session_state.resultados["stats"]
-        fator_extrapolacao = res_stats["area_total"] / res_stats["area_amostrada"] if res_stats["area_amostrada"] > 0 else 0
+        fator_ext = res_stats["area_total"] / res_stats["area_amostrada"] if res_stats["area_amostrada"] > 0 else 0
         
-        # Agrupar espécies
-        df_todas_sp = df_amostra.groupby(['Nome Comum', 'Nome Científico']).size().reset_index(name='N_Amostra')
-        df_todas_sp['N_Populacao'] = (df_todas_sp['N_Amostra'] * fator_extrapolacao)
+        # Agrupar e Criar ID
+        df_comp = df_amostra.groupby(['Nome Comum', 'Nome Científico']).size().reset_index(name='N_Amostra')
+        df_comp.insert(0, 'ID', range(1, len(df_comp) + 1))
+        df_comp['N_Populacao'] = (df_comp['N_Amostra'] * fator_ext)
         
-        # Inserção da Coluna ID (Iniciando em 1)
-        df_todas_sp.insert(0, 'ID', range(1, len(df_todas_sp) + 1))
-        
-        # Identificação automática inicial do fator
-        def buscar_fator(row):
+        # Identificação automática (Hardcoded)
+        def sugerir_fator(row):
             nc = str(row['Nome Científico']).strip()
             np = str(row['Nome Comum']).strip()
             return PROTECTED_SPECIES_MS.get(nc, PROTECTED_SPECIES_MS.get(np, 0))
         
-        df_todas_sp['Fator (x)'] = df_todas_sp.apply(buscar_fator, axis=1)
+        df_comp['Fator (x)'] = df_comp.apply(sugerir_fator, axis=1)
         
-        # 2. Lógica de Pintura (Highlight)
-        def highlight_protected(row):
-            # Se o fator for maior que 0, pinta a linha de amarelo suave (estilo técnico)
-            return ['background-color: #f1c40f; color: black' if row['Fator (x)'] > 0 else '' for _ in row]
+        # Interface de Instrução
+        st.info("💡 **Instrução:** Valide a lista abaixo. Se identificar uma espécie protegida com nome incorreto, ajuste o **Fator (x)** manualmente.")
         
-        # 3. Interface de Edição
-        # Nota: st.data_editor ainda não suporta .style diretamente para edição em tempo real de cores, 
-        # então usaremos uma abordagem de duas etapas: Edição -> Visualização Colorida.
+        # 2. TABELA ÚNICA EDITÁVEL
+        # Nota: Adicionamos a coluna 'Mudas Exigidas' já na visualização para ser calculada
+        df_comp['Mudas Exigidas'] = (np.ceil(df_comp['N_Populacao']) * df_comp['Fator (x)']).astype(int)
         
-        st.info("💡 **Ajuste os Fatores:** Altere os valores abaixo. As linhas identificadas pelo sistema já iniciam com o fator sugerido.")
-        
-        df_editado = st.data_editor(
-            df_todas_sp,
+        df_validado = st.data_editor(
+            df_comp,
             column_config={
                 "ID": st.column_config.NumberColumn("ID", width="small"),
                 "Nome Comum": "Nome Popular",
                 "N_Amostra": "N° Amostrado",
-                "N_Populacao": st.column_config.NumberColumn("N° População", format="%.2f"),
-                "Fator (x)": st.column_config.SelectboxColumn("Fator (x)", options=[0, 5, 10])
+                "N_Populacao": st.column_config.NumberColumn("N° População (Projeto)", format="%.2f"),
+                "Fator (x)": st.column_config.SelectboxColumn("Fator (x)", options=[0, 5, 10]),
+                "Mudas Exigidas": st.column_config.NumberColumn("Mudas Exigidas", format="%d")
             },
-            disabled=["ID", "Nome Comum", "Nome Científico", "N_Amostra", "N_Populacao"],
+            disabled=["ID", "Nome Comum", "Nome Científico", "N_Amostra", "N_Populacao", "Mudas Exigidas"],
             hide_index=True,
-            use_container_width=True
-        )
-        
-        # Cálculo das Mudas
-        df_editado['Mudas Exigidas'] = (np.ceil(df_editado['N_Populacao']) * df_editado['Fator (x)']).astype(int)
-        
-        # 4. Exibição da Tabela "Pintada" (Visualização Final)
-        st.markdown("##### 📝 Conferência Final e Destaque")
-        
-        # Aplicando a cor nas linhas com fator > 0
-        st.dataframe(
-            df_editado.style.apply(highlight_protected, axis=1),
             use_container_width=True,
-            hide_index=True
+            key="editor_compensacao" # Chave para manter o estado
         )
         
-        total_geral = df_editado['Mudas Exigidas'].sum()
+        # 3. APLICAÇÃO DE ESTILO (PINTURA) NA MESMA TABELA
+        # Como o data_editor retorna um dataframe, aplicamos o estilo para exibição final logo abaixo 
+        # ou usamos um truque de CSS para destacar o que está sendo editado.
+        
+        def colorir_linhas(row):
+            return ['background-color: #4d3d00' if row['Fator (x)'] > 0 else '' for _ in row]
+        
+        # Recalcula o total baseado na edição
+        total_final = (np.ceil(df_validado['N_Populacao']) * df_validado['Fator (x)']).sum()
         
         st.markdown("---")
-        if total_geral > 0:
-            st.success(f"### 🌱 TOTAL DE COMPENSAÇÃO: {total_geral:,} mudas".replace(",", "."))
+        if total_final > 0:
+            st.warning(f"### ⚠️ Total de Mudas para Compensação: {int(total_final):,}".replace(",", "."))
+            # Exibe a tabela estilizada (substituindo a visualização simples caso haja compensação)
+            st.write("Visualização de Destaque:")
+            st.dataframe(df_validado.style.apply(colorir_linhas, axis=1), use_container_width=True, hide_index=True)
         else:
-            st.info("Nenhuma muda de compensação exigida.")
+            st.success("✅ Nenhuma muda de compensação detectada ou informada.")
 
         st.markdown("---")
+
 
         # Diagnóstico e Tabela Oficial
+
+
         st.markdown("#### 🎯 Diagnóstico Estatístico")
         if res['er'] <= 20.0:
             st.success(f"**APROVADO:** Erro de amostragem de **{res['er']:.2f}%** (Lim: 20%).")
