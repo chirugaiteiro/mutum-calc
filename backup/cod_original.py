@@ -19,7 +19,7 @@ PROTECTED_SPECIES_MS = {
     # --- GRUPO FATOR 5 ---
     "Aroeira do Sertão": 5, "Myracrodrun urundeuva": 5, "Astronium urundeuva": 5, # Sinônimo MUITO comum
     "Aroeira": 5, "Astronium juglandifolium": 5, # Sinônimo
-    "Gonçalo Alves": 5, "Astronium fraxinifolium": 5, "Astronium graveolens": 5, # Confusão comum, melhor prevenir
+    "Gonçalo Alves": 5, "Astronium fraxinifolium": 5, "Astronium graveolens": 5, "Astonium graveolens": 5, "Astronium fraxinifolium": 5, # Confusão comum, melhor prevenir
     "Pequi": 5, "Caryocar brasiliense": 5, "Caryocar coriaceum": 5,
     "Mangaba": 5, "Hancornia speciosa": 5,
     "Cagaita": 5, "Eugenia dysenterica": 5, "Eugenia dysenterica Dc.": 5, "Stenocalyx dysentericus": 5, # Sinônimo antigo
