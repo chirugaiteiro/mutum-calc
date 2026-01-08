@@ -347,69 +347,71 @@ with tab3:
 
         # --- DENTRO DA ABA 3 (Substituindo o bloco de compensação antigo) ---
 
+      
         st.markdown("## 🌳 Validação de Compensação (Res. Semade n.9/2015)")
         
-        # 1. Preparação dos dados consolidados
+        # 1. Preparação dos dados
         df_amostra = st.session_state.df_final
         res_stats = st.session_state.resultados["stats"]
-        fator_ext = res_stats["area_total"] / res_stats["area_amostrada"] if res_stats["area_amostrada"] > 0 else 0
+        fator_extrapolacao = res_stats["area_total"] / res_stats["area_amostrada"] if res_stats["area_amostrada"] > 0 else 0
         
-        # Agrupar e Criar ID
-        df_comp = df_amostra.groupby(['Nome Comum', 'Nome Científico']).size().reset_index(name='N_Amostra')
-        df_comp.insert(0, 'ID', range(1, len(df_comp) + 1))
-        df_comp['N_Populacao'] = (df_comp['N_Amostra'] * fator_ext)
+        # Agrupar todas as espécies
+        df_todas_sp = df_amostra.groupby(['Nome Comum', 'Nome Científico']).size().reset_index(name='N_Amostra')
+        df_todas_sp['N_Populacao'] = (df_todas_sp['N_Amostra'] * fator_extrapolacao)
         
-        # Identificação automática (Hardcoded)
-        def sugerir_fator(row):
+        # Identificação automática inicial
+        def buscar_fator(row):
             nc = str(row['Nome Científico']).strip()
             np = str(row['Nome Comum']).strip()
             return PROTECTED_SPECIES_MS.get(nc, PROTECTED_SPECIES_MS.get(np, 0))
         
-        df_comp['Fator (x)'] = df_comp.apply(sugerir_fator, axis=1)
+        df_todas_sp['Fator (x)'] = df_todas_sp.apply(buscar_fator, axis=1)
         
-        # Interface de Instrução
-        st.info("💡 **Instrução:** Valide a lista abaixo. Se identificar uma espécie protegida com nome incorreto, ajuste o **Fator (x)** manualmente.")
+        # Interface de Alerta
+        if (df_todas_sp['Fator (x)'] > 0).any():
+            st.warning("⚠️ **ESPÉCIES PROTEGIDAS DETECTADAS:** Valide os valores na tabela abaixo e ajuste o Fator (x) se houver erros de digitação nos nomes.")
+        else:
+            st.info("💡 **VERIFICAÇÃO:** Nenhuma espécie protegida foi identificada automaticamente. Revise a lista abaixo para garantir que nenhum nome com erro de digitação passou despercebido.")
         
-        # 2. TABELA ÚNICA EDITÁVEL
-        # Nota: Adicionamos a coluna 'Mudas Exigidas' já na visualização para ser calculada
-        df_comp['Mudas Exigidas'] = (np.ceil(df_comp['N_Populacao']) * df_comp['Fator (x)']).astype(int)
-        
-        df_validado = st.data_editor(
-            df_comp,
+        # 2. TABELA COM AJUSTE AUTOMÁTICO E COLUNA DE MUDAS
+        # O data_editor permite que o usuário altere o fator e veja o resultado na hora
+        df_editavel = st.data_editor(
+            df_todas_sp,
             column_config={
-                "ID": st.column_config.NumberColumn("ID", width="small"),
-                "Nome Comum": "Nome Popular",
-                "N_Amostra": "N° Amostrado",
-                "N_Populacao": st.column_config.NumberColumn("N° População (Projeto)", format="%.2f"),
-                "Fator (x)": st.column_config.SelectboxColumn("Fator (x)", options=[0, 5, 10]),
-                "Mudas Exigidas": st.column_config.NumberColumn("Mudas Exigidas", format="%d")
+                "Nome Comum": st.column_config.TextColumn("Nome Popular", width="medium"),
+                "Nome Científico": st.column_config.TextColumn("Nome Científico", width="large"),
+                "N_Amostra": st.column_config.NumberColumn("N° Amostrado", format="%d"),
+                "N_Populacao": st.column_config.NumberColumn("N° População", format="%.2f"),
+                "Fator (x)": st.column_config.SelectboxColumn(
+                    "Fator (x)",
+                    options=[0, 5, 10],
+                    help="Selecione o fator de compensação conforme a Resolução."
+                )
             },
-            disabled=["ID", "Nome Comum", "Nome Científico", "N_Amostra", "N_Populacao", "Mudas Exigidas"],
+            disabled=["Nome Comum", "Nome Científico", "N_Amostra", "N_Populacao"],
             hide_index=True,
-            use_container_width=True,
-            key="editor_compensacao" # Chave para manter o estado
+            use_container_width=True, # Ajuste automático de largura
+            num_rows="dynamic"        # Evita barras de rolagem desnecessárias se a lista for pequena
         )
         
-        # 3. APLICAÇÃO DE ESTILO (PINTURA) NA MESMA TABELA
-        # Como o data_editor retorna um dataframe, aplicamos o estilo para exibição final logo abaixo 
-        # ou usamos um truque de CSS para destacar o que está sendo editado.
+        # 3. CÁLCULO DAS MUDAS POR ESPÉCIE E TOTAL
+        df_editavel['Mudas por Espécie'] = (np.ceil(df_editavel['N_Populacao']) * df_editavel['Fator (x)']).astype(int)
         
-        def colorir_linhas(row):
-            return ['background-color: #4d3d00' if row['Fator (x)'] > 0 else '' for _ in row]
+        # Exibição da coluna de mudas calculada na hora (logo abaixo ou via nova tabela)
+        st.markdown("##### 📊 Resumo de Mudas por Espécie")
+        st.dataframe(
+            df_editavel[df_editavel['Fator (x)'] > 0][['Nome Comum', 'Fator (x)', 'Mudas por Espécie']],
+            hide_index=True,
+            use_container_width=True
+        )
         
-        # Recalcula o total baseado na edição
-        total_final = (np.ceil(df_validado['N_Populacao']) * df_validado['Fator (x)']).sum()
+        total_geral = df_editavel['Mudas por Espécie'].sum()
         
         st.markdown("---")
-        if total_final > 0:
-            st.warning(f"### ⚠️ Total de Mudas para Compensação: {int(total_final):,}".replace(",", "."))
-            # Exibe a tabela estilizada (substituindo a visualização simples caso haja compensação)
-            st.write("Visualização de Destaque:")
-            st.dataframe(df_validado.style.apply(colorir_linhas, axis=1), use_container_width=True, hide_index=True)
+        if total_geral > 0:
+            st.success(f"### 🌱 TOTAL DE COMPENSAÇÃO: {total_geral:,} mudas".replace(",", "."))
         else:
-            st.success("✅ Nenhuma muda de compensação detectada ou informada.")
-
-        st.markdown("---")
+            st.info("Nenhuma muda de compensação exigida.")
 
 
         # Diagnóstico e Tabela Oficial
